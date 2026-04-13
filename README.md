@@ -1,12 +1,9 @@
-# {{PROJECT_NAME}}
+# llm-d-latency-predictor
 
-<!-- TODO: Replace {{PROJECT_NAME}} with your project name -->
-<!-- TODO: Update badges below with correct repo path -->
-
-[![CI](https://github.com/llm-d/{{PROJECT_NAME}}/actions/workflows/ci-pr-checks.yaml/badge.svg)](https://github.com/llm-d/{{PROJECT_NAME}}/actions/workflows/ci-pr-checks.yaml)
+[![CI](https://github.com/llm-d/llm-d-latency-predictor/actions/workflows/ci-pr-checks.yaml/badge.svg)](https://github.com/llm-d/llm-d-latency-predictor/actions/workflows/ci-pr-checks.yaml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-> **One-line description of what this project does.**
+> **Latency prediction service for the llm-d ecosystem.**
 
 ## Overview
 
@@ -22,8 +19,8 @@
 
 ```bash
 # Clone the repo
-git clone https://github.com/llm-d/{{PROJECT_NAME}}.git
-cd {{PROJECT_NAME}}
+git clone https://github.com/llm-d/llm-d-latency-predictor.git
+cd llm-d-latency-predictor
 
 # Install pre-commit hooks
 pre-commit install

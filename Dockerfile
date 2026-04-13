@@ -1,4 +1,4 @@
-# Multi-stage build for {{PROJECT_NAME}}
+# Multi-stage build for llm-d-latency-predictor
 # Supports multi-arch: linux/amd64, linux/arm64
 
 # --- Build stage ---
