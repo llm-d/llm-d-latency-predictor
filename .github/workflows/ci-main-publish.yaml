@@ -1,0 +1,55 @@
+name: CI - Main Publish
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: prediction-server
+            dockerfile: Dockerfile-prediction
+          - name: training-server
+            dockerfile: Dockerfile-training
+          - name: test
+            dockerfile: Dockerfile-test
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          repo="${GITHUB_REPOSITORY##*/}"
+          short_sha=$(git rev-parse --short HEAD)
+          echo "image_name=${repo}-${{ matrix.service.name }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push (${{ matrix.service.name }})
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            --annotation "index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+            -f ${{ matrix.service.dockerfile }} \
+            -t ghcr.io/llm-d/${{ steps.meta.outputs.image_name }}:main-${{ steps.meta.outputs.short_sha }} \
+            -t ghcr.io/llm-d/${{ steps.meta.outputs.image_name }}:latest-main \
+            .
