@@ -20,13 +20,13 @@ help: ## Show this help message
 ##@ Development
 
 .PHONY: install
-install: ## Install Python dependencies
-	pip install -r requirements.txt
-	pip install ruff pytest
+install: ## Install the package (editable) and dev tools
+	pip install -e .
+	pip install ruff pytest pytest-asyncio
 
 .PHONY: test
 test: ## Run Python tests
-	pytest
+	pytest tests/
 
 .PHONY: lint
 lint: ## Run Python linter (ruff)

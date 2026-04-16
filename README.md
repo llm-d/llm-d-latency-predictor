@@ -51,13 +51,28 @@ make image-build    # Build container images (prediction, training, test)
 make pre-commit     # Run pre-commit hooks
 ```
 
-### Components
+### Layout
 
-- `prediction_server.py` — FastAPI prediction server (serves latency predictions)
-- `training_server.py` — FastAPI training server (trains models from request traces)
-- `test_dual_server_client.py` — integration / load-test client exercising both servers
-- `deploy/` — Kubernetes manifests and kustomization
-- `build-deploy.sh` — helper script for building images and deploying to GKE
+```
+src/llm_d_latency_predictor/
+  prediction_server.py    # FastAPI prediction server (serves latency predictions)
+  training_server.py      # FastAPI training server (trains models from request traces)
+tests/
+  test_dual_server_client.py  # integration / load-test client exercising both servers
+deploy/                   # Kubernetes manifests and kustomization
+Dockerfile-prediction     # Image for the prediction server
+Dockerfile-training       # Image for the training server
+Dockerfile-test           # Image that runs the test client as a Job
+build-deploy.sh           # Helper script for building images and deploying to GKE
+```
+
+The code is packaged as `llm_d_latency_predictor` — after `make install` (editable) or
+`pip install .`, the servers can be run as Python modules:
+
+```bash
+uvicorn llm_d_latency_predictor.prediction_server:app --port 8001
+uvicorn llm_d_latency_predictor.training_server:app --port 8000
+```
 
 ## Architecture
 

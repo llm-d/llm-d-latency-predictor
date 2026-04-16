@@ -45,7 +45,7 @@ echo_error() {
 check_files() {
     echo_status "Checking required files..."
     
-    local files=("training_server.py" "prediction_server.py" "requirements.txt" "Dockerfile-training" "Dockerfile-prediction")
+    local files=("src/llm_d_latency_predictor/training_server.py" "src/llm_d_latency_predictor/prediction_server.py" "requirements.txt" "pyproject.toml" "Dockerfile-training" "Dockerfile-prediction")
     for file in "${files[@]}"; do
         if [[ ! -f "$file" ]]; then
             echo_error "Required file $file not found!"
@@ -194,7 +194,7 @@ spec:
         image: us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${TEST_IMAGE}:${TAG}
         imagePullPolicy: Always
         command: ["pytest"]
-        args: ["-v", "-s", "test_dual_server_client.py"]
+        args: ["-v", "-s", "tests/test_dual_server_client.py"]
         resources:
           requests:
             cpu: "500m"

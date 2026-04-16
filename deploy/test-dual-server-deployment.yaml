@@ -45,7 +45,7 @@ spec:
             name: prediction-server-config  # Reuse existing config if needed
         # Override the default command to run specific pytest
         command: ["pytest"]
-        args: ["-v", "-s", "test_dual_server_client.py"]
+        args: ["-v", "-s", "tests/test_dual_server_client.py"]
         # If your tests need to store results or logs
         volumeMounts:
         - name: test-results

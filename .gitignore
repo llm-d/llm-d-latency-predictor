@@ -33,3 +33,10 @@ Thumbs.db
 .envrc
 .secrets.env
 vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
