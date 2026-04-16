@@ -19,7 +19,7 @@ import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 
 import joblib
 import numpy as np
@@ -48,13 +48,13 @@ except ImportError:
     logging.warning("LightGBM not available. Please install with: pip install lightgbm")
 
 
-class ModelType(str, Enum):
+class ModelType(StrEnum):
     BAYESIAN_RIDGE = "bayesian_ridge"
     XGBOOST = "xgboost"
     LIGHTGBM = "lightgbm"
 
 
-class ObjectiveType(str, Enum):
+class ObjectiveType(StrEnum):
     QUANTILE = "quantile"
     MEAN = "mean"
 
