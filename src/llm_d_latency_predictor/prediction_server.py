@@ -224,7 +224,7 @@ class ModelSyncer:
 
                 if expected_size is not None and bytes_written != expected_size:
                     logging.error(
-                        f"Incomplete download for {name}: got {bytes_written} bytes, " f"expected {expected_size} bytes"
+                        f"Incomplete download for {name}: got {bytes_written} bytes, expected {expected_size} bytes"
                     )
                     os.unlink(tmp_path)
                     return False

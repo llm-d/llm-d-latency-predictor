@@ -772,7 +772,7 @@ def test_bulk_prediction_mixed_queue():
         assert pred["ttft_ms"] > 0
         assert pred["tpot_ms"] > 0
         queue_state = "noqueue" if requests_data[i]["num_request_waiting"] == 0 else "queued"
-        print(f"  Request {i+1} ({queue_state}): TTFT={pred['ttft_ms']:.2f}ms, TPOT={pred['tpot_ms']:.2f}ms")
+        print(f"  Request {i + 1} ({queue_state}): TTFT={pred['ttft_ms']:.2f}ms, TPOT={pred['tpot_ms']:.2f}ms")
 
     print("  Bulk prediction with mixed queue states passed")
 
@@ -1088,9 +1088,9 @@ def test_model_consistency_between_servers():
     prediction_model_type = prediction_data.get("model_type")
     prediction_objective_type = prediction_data.get("objective_type")
 
-    assert (
-        training_model_type == prediction_model_type
-    ), f"Model type mismatch: training={training_model_type}, prediction={prediction_model_type}"
+    assert training_model_type == prediction_model_type, (
+        f"Model type mismatch: training={training_model_type}, prediction={prediction_model_type}"
+    )
 
     # Objective type is reported by prediction server; just validate it's a known value
     assert prediction_objective_type in [
@@ -1248,9 +1248,9 @@ def test_dual_server_quantile_regression_learns_distribution():
     if objective_type == "mean":
         pytest.skip("Quantile distribution test not applicable for mean objective")
 
-    assert (
-        "xgboost" in model_type.lower() or "lightgbm" in model_type.lower()
-    ), f"Model not in quantile mode: {model_type}"
+    assert "xgboost" in model_type.lower() or "lightgbm" in model_type.lower(), (
+        f"Model not in quantile mode: {model_type}"
+    )
 
     z = norm.ppf(target_quantile)
 
@@ -1342,7 +1342,7 @@ def test_dual_server_quantile_regression_learns_distribution():
     tpot_rel_err = np.abs(tpot_pred - tpot_q_exp) / tpot_q_exp
     acc_mask = (ttft_rel_err <= REL_ERR_TOL) & (tpot_rel_err <= REL_ERR_TOL)
     rel_accuracy = acc_mask.mean()
-    print(f"Relative-err accuracy (≤{int(REL_ERR_TOL*100)}%): {rel_accuracy*100:.1f}%")
+    print(f"Relative-err accuracy (≤{int(REL_ERR_TOL * 100)}%): {rel_accuracy * 100:.1f}%")
 
     # 9) Coverage calibration (simulate actuals for the same test X)
     # Generate fresh noise so it's an *unseen* draw from the same D|X:
@@ -1365,13 +1365,13 @@ def test_dual_server_quantile_regression_learns_distribution():
         assert _bp[1]["ttft_ms"] >= _bp[0]["ttft_ms"] - 1e-6, "TTFT should not decrease with longer input"
 
     # 11) Final assertions
-    assert rel_accuracy >= 0.70, f"Only {rel_accuracy*100:.1f}% within ±{int(REL_ERR_TOL*100)}% (expected ≥70%)"
-    assert (
-        abs(ttft_cov - target_quantile) <= COVERAGE_TOL
-    ), f"TTFT coverage {ttft_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
-    assert (
-        abs(tpot_cov - target_quantile) <= COVERAGE_TOL
-    ), f"TPOT coverage {tpot_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
+    assert rel_accuracy >= 0.70, f"Only {rel_accuracy * 100:.1f}% within ±{int(REL_ERR_TOL * 100)}% (expected ≥70%)"
+    assert abs(ttft_cov - target_quantile) <= COVERAGE_TOL, (
+        f"TTFT coverage {ttft_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
+    )
+    assert abs(tpot_cov - target_quantile) <= COVERAGE_TOL, (
+        f"TPOT coverage {tpot_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
+    )
 
 
 _DEFAULT_MODEL_PREDICTION = 10.0  # _create_default_model trains on a single point with target=10.0
@@ -1533,10 +1533,10 @@ def test_tif_features_mean_learns_equation():
         )
 
     assert ttft_vals[2] > ttft_vals[0], (
-        f"TTFT must increase with prefill TIF: " f"got {ttft_vals[0]:.2f}ms at TIF=0, {ttft_vals[2]:.2f}ms at TIF=10k"
+        f"TTFT must increase with prefill TIF: got {ttft_vals[0]:.2f}ms at TIF=0, {ttft_vals[2]:.2f}ms at TIF=10k"
     )
     assert tpot_vals[2] > tpot_vals[0], (
-        f"TPOT must increase with decode TIF: " f"got {tpot_vals[0]:.2f}ms at TIF=0, {tpot_vals[2]:.2f}ms at TIF=10k"
+        f"TPOT must increase with decode TIF: got {tpot_vals[0]:.2f}ms at TIF=0, {tpot_vals[2]:.2f}ms at TIF=10k"
     )
     print("✓ Mean model learned TIF equation: predictions increase monotonically with TIF")
 
@@ -1657,10 +1657,10 @@ def test_tif_features_quantile_learns_distribution():
         )
 
     assert ttft_mono[2] > ttft_mono[0], (
-        f"TTFT quantile must increase with prefill TIF: " f"{ttft_mono[0]:.2f} at TIF=0, {ttft_mono[2]:.2f} at TIF=10k"
+        f"TTFT quantile must increase with prefill TIF: {ttft_mono[0]:.2f} at TIF=0, {ttft_mono[2]:.2f} at TIF=10k"
     )
     assert tpot_mono[2] > tpot_mono[0], (
-        f"TPOT quantile must increase with decode TIF: " f"{tpot_mono[0]:.2f} at TIF=0, {tpot_mono[2]:.2f} at TIF=10k"
+        f"TPOT quantile must increase with decode TIF: {tpot_mono[0]:.2f} at TIF=0, {tpot_mono[2]:.2f} at TIF=10k"
     )
 
     # --- Coverage calibration: test at two TIF buckets (low / high) ---
@@ -1705,10 +1705,10 @@ def test_tif_features_quantile_learns_distribution():
         )
 
         assert abs(ttft_cov - target_quantile) <= COVERAGE_TOL, (
-            f"[{bucket_label}] TTFT coverage {ttft_cov:.3f} " f"not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
+            f"[{bucket_label}] TTFT coverage {ttft_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
         )
         assert abs(tpot_cov - target_quantile) <= COVERAGE_TOL, (
-            f"[{bucket_label}] TPOT coverage {tpot_cov:.3f} " f"not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
+            f"[{bucket_label}] TPOT coverage {tpot_cov:.3f} not within ±{COVERAGE_TOL} of {target_quantile:.3f}"
         )
 
     print(f"✓ Quantile model learned TIF distribution (monotone + coverage within ±{COVERAGE_TOL})")
@@ -1756,19 +1756,19 @@ def test_end_to_end_workflow():
                     successful_predictions += 1
                     pred_data = pred_r.json()
                     print(
-                        f"  Prediction {i+1}: TTFT={pred_data['ttft_ms']:.2f}ms, TPOT={pred_data['tpot_ms']:.2f}ms (prefix_cache={payload['prefix_cache_score']:.2f})"
+                        f"  Prediction {i + 1}: TTFT={pred_data['ttft_ms']:.2f}ms, TPOT={pred_data['tpot_ms']:.2f}ms (prefix_cache={payload['prefix_cache_score']:.2f})"
                     )
                     break
                 else:
-                    print(f"  Prediction {i+1} attempt {attempt+1} failed with status {pred_r.status_code}")
+                    print(f"  Prediction {i + 1} attempt {attempt + 1} failed with status {pred_r.status_code}")
             except requests.exceptions.ConnectTimeout:
-                print(f"  Prediction {i+1} attempt {attempt+1} timed out")
+                print(f"  Prediction {i + 1} attempt {attempt + 1} timed out")
                 if attempt < max_retries - 1:
                     time.sleep(2)  # Wait before retry
                 else:
-                    print(f"  Prediction {i+1} failed after {max_retries} attempts")
+                    print(f"  Prediction {i + 1} failed after {max_retries} attempts")
             except requests.exceptions.RequestException as e:
-                print(f"  Prediction {i+1} attempt {attempt+1} failed: {e}")
+                print(f"  Prediction {i + 1} attempt {attempt + 1} failed: {e}")
                 break
 
     # Accept partial success if servers are having issues
@@ -2088,9 +2088,9 @@ if __name__ == "__main__":
             print(f"✗ {test_name} failed: {e}")
             failed += 1
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"FINAL RESULTS: {passed} passed, {failed} failed")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
 
     if failed == 0:
         print("🎉 All tests passed! Your dual-server architecture with prefix cache score is working correctly.")

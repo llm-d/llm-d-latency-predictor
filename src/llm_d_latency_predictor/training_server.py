@@ -943,7 +943,7 @@ class LatencyPredictor:
                                 self.ttft_mae_scores.append(m1)
                                 self.ttft_rmse_scores.append(m2)
                                 logging.info(
-                                    f"TTFT model trained on {len(df_ttft)} samples. " f"MAE = {m1:.4f}, RMSE = {m2:.4f}"
+                                    f"TTFT model trained on {len(df_ttft)} samples. MAE = {m1:.4f}, RMSE = {m2:.4f}"
                                 )
                             else:
                                 self.ttft_quantile_loss_scores.append(m1)
@@ -952,8 +952,8 @@ class LatencyPredictor:
                                 logging.info(
                                     f"TTFT model trained on {len(df_ttft)} samples. "
                                     f"Quantile Loss = {m1:.4f}, "
-                                    f"Coverage = {m2:.2f}% (target: {self.quantile*100:.0f}%), "
-                                    f"Violation Rate = {m3:.2f}% (target: {(1-self.quantile)*100:.0f}%)"
+                                    f"Coverage = {m2:.2f}% (target: {self.quantile * 100:.0f}%), "
+                                    f"Violation Rate = {m3:.2f}% (target: {(1 - self.quantile) * 100:.0f}%)"
                                 )
                         else:
                             logging.info(
@@ -991,7 +991,7 @@ class LatencyPredictor:
                                 self.tpot_mae_scores.append(m1)
                                 self.tpot_rmse_scores.append(m2)
                                 logging.info(
-                                    f"TPOT model trained on {len(df_tpot)} samples. " f"MAE = {m1:.4f}, RMSE = {m2:.4f}"
+                                    f"TPOT model trained on {len(df_tpot)} samples. MAE = {m1:.4f}, RMSE = {m2:.4f}"
                                 )
                             else:
                                 self.tpot_quantile_loss_scores.append(m1)
@@ -1000,8 +1000,8 @@ class LatencyPredictor:
                                 logging.info(
                                     f"TPOT model trained on {len(df_tpot)} samples. "
                                     f"Quantile Loss = {m1:.4f}, "
-                                    f"Coverage = {m2:.2f}% (target: {self.quantile*100:.0f}%), "
-                                    f"Violation Rate = {m3:.2f}% (target: {(1-self.quantile)*100:.0f}%)"
+                                    f"Coverage = {m2:.2f}% (target: {self.quantile * 100:.0f}%), "
+                                    f"Violation Rate = {m3:.2f}% (target: {(1 - self.quantile) * 100:.0f}%)"
                                 )
                         else:
                             logging.info(
@@ -1547,7 +1547,7 @@ class LatencyPredictor:
                 if self.model_type == ModelType.BAYESIAN_RIDGE:
                     # Use stored descaled coefficients
                     if coefficients:
-                        lines.append(f'{prefix}_intercept{{}} {coefficients.get("intercept", 0.0):.6f}')
+                        lines.append(f"{prefix}_intercept{{}} {coefficients.get('intercept', 0.0):.6f}")
                         for f in feats:
                             coef_value = coefficients.get(f, 0.0)
                             lines.append(f'{prefix}_coef{{feature="{f}"}} {coef_value:.6f}')
@@ -2077,8 +2077,8 @@ async def model_download_info():
     # Add quantile-specific evaluation info
     info["evaluation_info"] = {
         "quantile_loss": "Pinball loss for quantile regression evaluation",
-        "coverage_percent": f"Percentage of actual values below predicted {predictor.quantile:.0%} quantile (target: {predictor.quantile*100:.1f}%)",
-        "violation_rate_percent": f"Percentage of actual values above predicted {predictor.quantile:.0%} quantile (target: {(1-predictor.quantile)*100:.1f}%)",
+        "coverage_percent": f"Percentage of actual values below predicted {predictor.quantile:.0%} quantile (target: {predictor.quantile * 100:.1f}%)",
+        "violation_rate_percent": f"Percentage of actual values above predicted {predictor.quantile:.0%} quantile (target: {(1 - predictor.quantile) * 100:.1f}%)",
     }
 
     return info
@@ -2219,8 +2219,8 @@ async def list_models():
         "server_time": datetime.now(UTC).isoformat(),
         "evaluation_metrics": {
             "quantile_loss": "Lower is better",
-            "coverage_percent": f"Target: {predictor.quantile*100:.1f}%",
-            "violation_rate_percent": f"Target: {(1-predictor.quantile)*100:.1f}%",
+            "coverage_percent": f"Target: {predictor.quantile * 100:.1f}%",
+            "violation_rate_percent": f"Target: {(1 - predictor.quantile) * 100:.1f}%",
         },
     }
 
