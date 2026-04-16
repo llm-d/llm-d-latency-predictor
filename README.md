@@ -11,7 +11,7 @@
 
 ## Prerequisites
 
-- Go 1.24+
+- Python 3.11+
 - Docker (for container builds)
 - [pre-commit](https://pre-commit.com/) (for local development)
 
@@ -25,8 +25,8 @@ cd llm-d-latency-predictor
 # Install pre-commit hooks
 pre-commit install
 
-# Build
-make build
+# Install Python dependencies
+make install
 
 # Run tests
 make test
@@ -43,13 +43,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, coding standa
 
 ```bash
 make help           # Show all available targets
-make build          # Build the project
-make test           # Run tests with race detection
-make lint           # Run Go and Python linters
-make fmt            # Format Go and Python code
-make image-build    # Build multi-arch container image
+make install        # Install Python dependencies
+make test           # Run Python tests
+make lint           # Run Python linter (ruff)
+make fmt            # Format Python code
+make image-build    # Build container images (prediction, training, test)
 make pre-commit     # Run pre-commit hooks
 ```
+
+### Components
+
+- `prediction_server.py` — FastAPI prediction server (serves latency predictions)
+- `training_server.py` — FastAPI training server (trains models from request traces)
+- `test_dual_server_client.py` — integration / load-test client exercising both servers
+- `deploy/` — Kubernetes manifests and kustomization
+- `build-deploy.sh` — helper script for building images and deploying to GKE
 
 ## Architecture
 

@@ -23,6 +23,14 @@ inputs:
     required: false
     description: If true, skip tagging as 'latest'
     default: "false"
+  dockerfile:
+    required: false
+    description: Path to Dockerfile (relative to build context)
+    default: Dockerfile
+  context:
+    required: false
+    description: Build context directory
+    default: "."
 
 runs:
   using: "composite"
@@ -49,6 +57,7 @@ runs:
           --push \
           --annotation "index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
           --annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+          -f ${{ inputs.dockerfile }} \
           -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ inputs.tag }} \
-          ${LATEST_TAG} .
+          ${LATEST_TAG} ${{ inputs.context }}
       shell: bash
