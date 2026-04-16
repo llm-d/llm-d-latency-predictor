@@ -11,29 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-import time
-import logging
-import threading
-import tempfile
+import contextlib
 import hashlib
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from datetime import datetime, timezone
-from typing import Tuple, Optional, List
+import logging
+import os
+import tempfile
+import threading
+import time
+from datetime import UTC, datetime
 from enum import Enum
 
 import joblib
-import uvicorn
 import numpy as np
 import pandas as pd
+import requests
+import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     import orjson  # noqa: F401 — imported for ORJSONResponse
+
     ORJSON_AVAILABLE = True
 except ImportError:
     ORJSON_AVAILABLE = False
@@ -42,6 +43,7 @@ except ImportError:
 # Try to import XGBoost; fall back if unavailable
 try:
     import xgboost as xgb
+
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBOOST_AVAILABLE = False
@@ -49,6 +51,7 @@ except ImportError:
 
 try:
     import lightgbm as lgb
+
     LIGHTGBM_AVAILABLE = True
 except ImportError:
     LIGHTGBM_AVAILABLE = False
@@ -89,7 +92,9 @@ class PredictSettings:
     DOWNLOAD_RETRIES: int = int(os.getenv("DOWNLOAD_RETRIES", "3"))
 
     ENSEMBLE_MODE: bool = os.getenv("LATENCY_ENSEMBLE_MODE", "true").lower() == "true"
-    ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
+    ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = (
+        os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
+    )
 
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     LOCAL_TTFT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TTFT_GATED_MODEL_PATH", "/local_models/ttft_gated.joblib")
@@ -103,8 +108,7 @@ class QueueGatedModel:
     appropriate sub-model + scaler from inside this wrapper.
     """
 
-    def __init__(self, noqueue_model, queued_model,
-                 noqueue_scaler=None, queued_scaler=None):
+    def __init__(self, noqueue_model, queued_model, noqueue_scaler=None, queued_scaler=None):
         self.noqueue_model = noqueue_model
         self.queued_model = queued_model
         self.noqueue_scaler = noqueue_scaler
@@ -130,7 +134,7 @@ def _create_http_session() -> requests.Session:
     return session
 
 
-def _file_checksum(path: str) -> Optional[str]:
+def _file_checksum(path: str) -> str | None:
     """Return MD5 hex digest of a file, or None if it doesn't exist."""
     if not os.path.exists(path):
         return None
@@ -146,7 +150,7 @@ class ModelSyncer:
 
     def __init__(self):
         self._shutdown_event = threading.Event()
-        self._sync_thread: Optional[threading.Thread] = None
+        self._sync_thread: threading.Thread | None = None
         self._sync_lock = threading.Lock()
         self._http: requests.Session = _create_http_session()
 
@@ -166,7 +170,7 @@ class ModelSyncer:
 
     def _download_model_if_newer(self, name: str, dest: str) -> bool:
         """Download a model file if the server has a newer version.
-        
+
         Returns True if a new file was written to dest.
         """
         try:
@@ -179,10 +183,10 @@ class ModelSyncer:
             mtime = info.get("last_modified")
             if not mtime:
                 return False
-            server_time = datetime.fromisoformat(mtime.replace('Z', '+00:00'))
+            server_time = datetime.fromisoformat(mtime.replace("Z", "+00:00"))
 
             if os.path.exists(dest):
-                local_time = datetime.fromtimestamp(os.path.getmtime(dest), tz=timezone.utc)
+                local_time = datetime.fromtimestamp(os.path.getmtime(dest), tz=UTC)
                 if local_time >= server_time:
                     return False
 
@@ -206,7 +210,7 @@ class ModelSyncer:
             )
             try:
                 bytes_written = 0
-                with os.fdopen(fd, 'wb') as f:
+                with os.fdopen(fd, "wb") as f:
                     for chunk in dl.iter_content(65536):
                         if chunk:
                             f.write(chunk)
@@ -220,8 +224,7 @@ class ModelSyncer:
 
                 if expected_size is not None and bytes_written != expected_size:
                     logging.error(
-                        f"Incomplete download for {name}: got {bytes_written} bytes, "
-                        f"expected {expected_size} bytes"
+                        f"Incomplete download for {name}: got {bytes_written} bytes, " f"expected {expected_size} bytes"
                     )
                     os.unlink(tmp_path)
                     return False
@@ -240,10 +243,8 @@ class ModelSyncer:
                 return True
 
             except Exception:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
                 raise
 
         except requests.RequestException as e:
@@ -332,12 +333,12 @@ class LightweightPredictor:
         self.tpot_scaler = None
 
         # Gated ensemble model wrappers (QueueGatedModel instances)
-        self.ttft_gated: Optional[QueueGatedModel] = None
-        self.tpot_gated: Optional[QueueGatedModel] = None
+        self.ttft_gated: QueueGatedModel | None = None
+        self.tpot_gated: QueueGatedModel | None = None
         self.ensemble_active: bool = False
 
         self.lock = threading.RLock()
-        self.last_load: Optional[datetime] = None
+        self.last_load: datetime | None = None
         # Track checksums to avoid redundant reloads
         self._loaded_checksums: dict = {}
         logging.info(f"Predictor type: {self.model_type}, objective: {self.objective_type}, quantile: {self.quantile}")
@@ -352,54 +353,46 @@ class LightweightPredictor:
 
     def _prepare_features_with_interaction(self, df: pd.DataFrame, model_type: str) -> pd.DataFrame:
         """Prepare features with interaction terms to match training server."""
-        if 'pod_type' in df.columns:
-            df['pod_type'] = df['pod_type'].fillna('')
-            df['pod_type_cat'] = pd.Categorical(
-                df['pod_type'],
-                categories=['', 'prefill', 'decode'],
-                ordered=False
-            )
+        if "pod_type" in df.columns:
+            df["pod_type"] = df["pod_type"].fillna("")
+            df["pod_type_cat"] = pd.Categorical(df["pod_type"], categories=["", "prefill", "decode"], ordered=False)
         else:
-            df['pod_type_cat'] = pd.Categorical(
-                [''] * len(df), categories=['', 'prefill', 'decode'], ordered=False
-            )
+            df["pod_type_cat"] = pd.Categorical([""] * len(df), categories=["", "prefill", "decode"], ordered=False)
 
         # Binary feature: gives the tree a clean signal to partition idle vs queued
-        df['is_queued'] = (df['num_request_waiting'] > 0).astype(int)
+        df["is_queued"] = (df["num_request_waiting"] > 0).astype(int)
 
         _tif = []
         if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
-            if 'prefill_tokens_in_flight' not in df.columns:
-                df['prefill_tokens_in_flight'] = 0
-            if 'decode_tokens_in_flight' not in df.columns:
-                df['decode_tokens_in_flight'] = 0
-            _tif = ['prefill_tokens_in_flight', 'decode_tokens_in_flight']
+            if "prefill_tokens_in_flight" not in df.columns:
+                df["prefill_tokens_in_flight"] = 0
+            if "decode_tokens_in_flight" not in df.columns:
+                df["decode_tokens_in_flight"] = 0
+            _tif = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
 
         if model_type == "ttft":
-            df['effective_input_tokens'] = (1 - df['prefix_cache_score']) * df['input_token_length']
-            df['prefill_score_bucket'] = (
-                (df['prefix_cache_score'].clip(0, 1) * self.prefix_buckets)
+            df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * df["input_token_length"]
+            df["prefill_score_bucket"] = (
+                (df["prefix_cache_score"].clip(0, 1) * self.prefix_buckets)
                 .astype(int)
                 .clip(upper=self.prefix_buckets - 1)
             )
-            df['prefill_score_bucket'] = pd.Categorical(
-                df['prefill_score_bucket'], categories=[0, 1, 2, 3], ordered=True
+            df["prefill_score_bucket"] = pd.Categorical(
+                df["prefill_score_bucket"], categories=[0, 1, 2, 3], ordered=True
             )
 
             feature_cols = (
-                ['is_queued', 'kv_cache_percentage', 'input_token_length',
-                 'num_request_waiting', 'num_request_running']
+                ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + _tif
-                + ['prefix_cache_score', 'effective_input_tokens', 'prefill_score_bucket', 'pod_type_cat']
+                + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
             )
             return df[feature_cols]
 
         else:  # tpot
             feature_cols = (
-                ['is_queued', 'kv_cache_percentage', 'input_token_length',
-                 'num_request_waiting', 'num_request_running']
+                ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + _tif
-                + ['num_tokens_generated', 'pod_type_cat']
+                + ["num_tokens_generated", "pod_type_cat"]
             )
             return df[feature_cols]
 
@@ -415,7 +408,7 @@ class LightweightPredictor:
         """
         features = self._prepare_features_with_interaction(df, model_type)
         if queue_regime == "noqueue":
-            features = features.drop(columns=['is_queued', 'num_request_waiting'], errors='ignore')
+            features = features.drop(columns=["is_queued", "num_request_waiting"], errors="ignore")
         return features
 
     def load_models(self) -> bool:
@@ -498,7 +491,7 @@ class LightweightPredictor:
                 self.tpot_gated = new_tpot_gated
                 self.ensemble_active = new_ensemble_active
                 self._loaded_checksums = all_checksums
-                self.last_load = datetime.now(timezone.utc)
+                self.last_load = datetime.now(UTC)
 
             logging.info(f"Models loaded (PID={os.getpid()}, ensemble_active={self.ensemble_active})")
             return True
@@ -507,23 +500,28 @@ class LightweightPredictor:
             logging.error(f"Load error: {e}")
             return False
 
-    def _predict_with_models(self, df_ttft: pd.DataFrame, df_tpot: pd.DataFrame,
-                             ttft_model, tpot_model, ttft_scaler=None, tpot_scaler=None):
+    def _predict_with_models(
+        self, df_ttft: pd.DataFrame, df_tpot: pd.DataFrame, ttft_model, tpot_model, ttft_scaler=None, tpot_scaler=None
+    ):
         """Core prediction logic using given models/scalers. Returns (ttft_preds, tpot_preds) as arrays."""
         if self.model_type == ModelType.BAYESIAN_RIDGE:
-            ttft_for_scale = df_ttft.drop(columns=['prefill_score_bucket'], errors='ignore')
-            if 'pod_type_cat' in ttft_for_scale.columns:
+            ttft_for_scale = df_ttft.drop(columns=["prefill_score_bucket"], errors="ignore")
+            if "pod_type_cat" in ttft_for_scale.columns:
                 ttft_for_scale = pd.get_dummies(
-                    ttft_for_scale, columns=['pod_type_cat'],
-                    prefix='pod_type', drop_first=False,
+                    ttft_for_scale,
+                    columns=["pod_type_cat"],
+                    prefix="pod_type",
+                    drop_first=False,
                 )
             ttft_scaled = ttft_scaler.transform(ttft_for_scale)
 
             tpot_for_scale = df_tpot.copy()
-            if 'pod_type_cat' in tpot_for_scale.columns:
+            if "pod_type_cat" in tpot_for_scale.columns:
                 tpot_for_scale = pd.get_dummies(
-                    tpot_for_scale, columns=['pod_type_cat'],
-                    prefix='pod_type', drop_first=False,
+                    tpot_for_scale,
+                    columns=["pod_type_cat"],
+                    prefix="pod_type",
+                    drop_first=False,
                 )
             tpot_scaled = tpot_scaler.transform(tpot_for_scale)
 
@@ -541,24 +539,28 @@ class LightweightPredictor:
         else:  # XGBoost or LightGBM
             return ttft_model.predict(df_ttft), tpot_model.predict(df_tpot)
 
-    def predict(self, features: dict) -> Tuple[float, float]:
+    def predict(self, features: dict) -> tuple[float, float]:
         """Make predictions using the loaded models."""
         try:
             required = [
-                'kv_cache_percentage', 'input_token_length', 'num_request_waiting',
-                'num_request_running', 'num_tokens_generated', 'prefix_cache_score',
+                "kv_cache_percentage",
+                "input_token_length",
+                "num_request_waiting",
+                "num_request_running",
+                "num_tokens_generated",
+                "prefix_cache_score",
             ]
             for f in required:
                 if f not in features:
                     raise ValueError(f"Missing required feature: {f}")
-                if not isinstance(features[f], (int, float)):
+                if not isinstance(features[f], int | float):
                     raise ValueError(f"Invalid type for feature {f}: expected number")
 
             # Snapshot model references under the lock (fast path — no inference here).
             with self.lock:
                 if not self.is_ready:
                     raise HTTPException(status_code=503, detail="Models not ready")
-                if self.ensemble_active and features['num_request_waiting'] == 0:
+                if self.ensemble_active and features["num_request_waiting"] == 0:
                     queue_regime = "noqueue"
                     ttft_model = self.ttft_gated.noqueue_model
                     tpot_model = self.tpot_gated.noqueue_model
@@ -579,39 +581,39 @@ class LightweightPredictor:
 
             # Heavy work: DataFrame construction + inference — no lock held.
             ttft_raw_data = {
-                'kv_cache_percentage': features['kv_cache_percentage'],
-                'input_token_length': features['input_token_length'],
-                'num_request_waiting': features['num_request_waiting'],
-                'num_request_running': features['num_request_running'],
-                'prefix_cache_score': features['prefix_cache_score'],
+                "kv_cache_percentage": features["kv_cache_percentage"],
+                "input_token_length": features["input_token_length"],
+                "num_request_waiting": features["num_request_waiting"],
+                "num_request_running": features["num_request_running"],
+                "prefix_cache_score": features["prefix_cache_score"],
             }
             tpot_raw_data = {
-                'kv_cache_percentage': features['kv_cache_percentage'],
-                'input_token_length': features['input_token_length'],
-                'num_request_waiting': features['num_request_waiting'],
-                'num_request_running': features['num_request_running'],
-                'num_tokens_generated': features['num_tokens_generated'],
+                "kv_cache_percentage": features["kv_cache_percentage"],
+                "input_token_length": features["input_token_length"],
+                "num_request_waiting": features["num_request_waiting"],
+                "num_request_running": features["num_request_running"],
+                "num_tokens_generated": features["num_tokens_generated"],
             }
 
             if queue_regime is not None:
                 df_ttft_raw = pd.DataFrame([ttft_raw_data])
-                if 'pod_type' in features:
-                    df_ttft_raw['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    df_ttft_raw["pod_type"] = features["pod_type"]
                 df_ttft = self._prepare_features_for_ensemble(df_ttft_raw, "ttft", queue_regime)
 
                 df_tpot_raw = pd.DataFrame([tpot_raw_data])
-                if 'pod_type' in features:
-                    df_tpot_raw['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    df_tpot_raw["pod_type"] = features["pod_type"]
                 df_tpot = self._prepare_features_for_ensemble(df_tpot_raw, "tpot", queue_regime)
             else:
                 df_ttft_raw = pd.DataFrame([ttft_raw_data])
-                if 'pod_type' in features:
-                    df_ttft_raw['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    df_ttft_raw["pod_type"] = features["pod_type"]
                 df_ttft = self._prepare_features_with_interaction(df_ttft_raw, "ttft")
 
                 df_tpot_raw = pd.DataFrame([tpot_raw_data])
-                if 'pod_type' in features:
-                    df_tpot_raw['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    df_tpot_raw["pod_type"] = features["pod_type"]
                 df_tpot = self._prepare_features_with_interaction(df_tpot_raw, "tpot")
 
             ttft_preds, tpot_preds = self._predict_with_models(
@@ -624,22 +626,26 @@ class LightweightPredictor:
             raise HTTPException(status_code=400, detail=str(ve))
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception:
             logging.error("Error in predict():", exc_info=True)
             raise HTTPException(status_code=500, detail="Internal error during prediction")
 
-    def predict_batch(self, features_list: List[dict]) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_batch(self, features_list: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         """Make batch predictions using the loaded models."""
         try:
             required = [
-                'kv_cache_percentage', 'input_token_length', 'num_request_waiting',
-                'num_request_running', 'num_tokens_generated', 'prefix_cache_score',
+                "kv_cache_percentage",
+                "input_token_length",
+                "num_request_waiting",
+                "num_request_running",
+                "num_tokens_generated",
+                "prefix_cache_score",
             ]
             for i, features in enumerate(features_list):
                 for f in required:
                     if f not in features:
                         raise ValueError(f"Missing required feature '{f}' in request {i}")
-                    if not isinstance(features[f], (int, float)):
+                    if not isinstance(features[f], int | float):
                         raise ValueError(f"Invalid type for feature '{f}' in request {i}: expected number")
 
             # Snapshot model references under the lock (fast path — no inference here).
@@ -662,25 +668,25 @@ class LightweightPredictor:
 
             for features in features_list:
                 ttft_entry = {
-                    'kv_cache_percentage': features['kv_cache_percentage'],
-                    'input_token_length': features['input_token_length'],
-                    'num_request_waiting': features['num_request_waiting'],
-                    'num_request_running': features['num_request_running'],
-                    'prefix_cache_score': features['prefix_cache_score'],
+                    "kv_cache_percentage": features["kv_cache_percentage"],
+                    "input_token_length": features["input_token_length"],
+                    "num_request_waiting": features["num_request_waiting"],
+                    "num_request_running": features["num_request_running"],
+                    "prefix_cache_score": features["prefix_cache_score"],
                 }
-                if 'pod_type' in features:
-                    ttft_entry['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    ttft_entry["pod_type"] = features["pod_type"]
                 ttft_raw_data.append(ttft_entry)
 
                 tpot_entry = {
-                    'kv_cache_percentage': features['kv_cache_percentage'],
-                    'input_token_length': features['input_token_length'],
-                    'num_request_waiting': features['num_request_waiting'],
-                    'num_request_running': features['num_request_running'],
-                    'num_tokens_generated': features['num_tokens_generated'],
+                    "kv_cache_percentage": features["kv_cache_percentage"],
+                    "input_token_length": features["input_token_length"],
+                    "num_request_waiting": features["num_request_waiting"],
+                    "num_request_running": features["num_request_running"],
+                    "num_tokens_generated": features["num_tokens_generated"],
                 }
-                if 'pod_type' in features:
-                    tpot_entry['pod_type'] = features['pod_type']
+                if "pod_type" in features:
+                    tpot_entry["pod_type"] = features["pod_type"]
                 tpot_raw_data.append(tpot_entry)
 
             n = len(features_list)
@@ -688,14 +694,26 @@ class LightweightPredictor:
             tpot_results = np.zeros(n)
 
             if ensemble_active:
-                noqueue_idx = [i for i, f in enumerate(features_list) if f['num_request_waiting'] == 0]
-                queued_idx = [i for i, f in enumerate(features_list) if f['num_request_waiting'] > 0]
+                noqueue_idx = [i for i, f in enumerate(features_list) if f["num_request_waiting"] == 0]
+                queued_idx = [i for i, f in enumerate(features_list) if f["num_request_waiting"] > 0]
 
                 for idx_list, regime, ttft_m, tpot_m, ttft_s, tpot_s in [
-                    (noqueue_idx, "noqueue", ttft_gated.noqueue_model, tpot_gated.noqueue_model,
-                     ttft_gated.noqueue_scaler, tpot_gated.noqueue_scaler),
-                    (queued_idx, "queued", ttft_gated.queued_model, tpot_gated.queued_model,
-                     ttft_gated.queued_scaler, tpot_gated.queued_scaler),
+                    (
+                        noqueue_idx,
+                        "noqueue",
+                        ttft_gated.noqueue_model,
+                        tpot_gated.noqueue_model,
+                        ttft_gated.noqueue_scaler,
+                        tpot_gated.noqueue_scaler,
+                    ),
+                    (
+                        queued_idx,
+                        "queued",
+                        ttft_gated.queued_model,
+                        tpot_gated.queued_model,
+                        ttft_gated.queued_scaler,
+                        tpot_gated.queued_scaler,
+                    ),
                 ]:
                     if not idx_list:
                         continue
@@ -703,9 +721,7 @@ class LightweightPredictor:
                     sub_tpot_raw = pd.DataFrame([tpot_raw_data[i] for i in idx_list])
                     sub_ttft = self._prepare_features_for_ensemble(sub_ttft_raw, "ttft", regime)
                     sub_tpot = self._prepare_features_for_ensemble(sub_tpot_raw, "tpot", regime)
-                    ttft_p, tpot_p = self._predict_with_models(
-                        sub_ttft, sub_tpot, ttft_m, tpot_m, ttft_s, tpot_s
-                    )
+                    ttft_p, tpot_p = self._predict_with_models(sub_ttft, sub_tpot, ttft_m, tpot_m, ttft_s, tpot_s)
                     for j, orig_idx in enumerate(idx_list):
                         ttft_results[orig_idx] = ttft_p[j]
                         tpot_results[orig_idx] = tpot_p[j]
@@ -719,8 +735,7 @@ class LightweightPredictor:
                 df_tpot_batch = self._prepare_features_with_interaction(df_tpot_raw, "tpot")
 
                 ttft_preds, tpot_preds = self._predict_with_models(
-                    df_ttft_batch, df_tpot_batch,
-                    ttft_model, tpot_model, ttft_scaler, tpot_scaler
+                    df_ttft_batch, df_tpot_batch, ttft_model, tpot_model, ttft_scaler, tpot_scaler
                 )
                 return ttft_preds, tpot_preds
 
@@ -729,11 +744,11 @@ class LightweightPredictor:
             raise HTTPException(status_code=400, detail=str(ve))
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception:
             logging.error("Error in predict_batch():", exc_info=True)
             raise HTTPException(status_code=500, detail="Internal error during batch prediction")
 
-    def predict_batch_fast(self, reqs: list) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_batch_fast(self, reqs: list) -> tuple[np.ndarray, np.ndarray]:
         """Fast-path bulk prediction from PredictionRequest objects.
 
         Skips r.dict() conversion and list-of-dicts DataFrame construction.
@@ -746,15 +761,15 @@ class LightweightPredictor:
 
             # Extract each feature column as a numpy array in one pass.
             # np.fromiter with count= pre-allocates and avoids intermediate lists.
-            kv  = np.fromiter((r.kv_cache_percentage    for r in reqs), dtype=np.float64, count=n)
-            itl = np.fromiter((r.input_token_length      for r in reqs), dtype=np.float64, count=n)
-            nrw = np.fromiter((r.num_request_waiting     for r in reqs), dtype=np.float64, count=n)
-            nrr = np.fromiter((r.num_request_running     for r in reqs), dtype=np.float64, count=n)
-            ntg = np.fromiter((r.num_tokens_generated    for r in reqs), dtype=np.float64, count=n)
-            pcs = np.fromiter((r.prefix_cache_score      for r in reqs), dtype=np.float64, count=n)
+            kv = np.fromiter((r.kv_cache_percentage for r in reqs), dtype=np.float64, count=n)
+            itl = np.fromiter((r.input_token_length for r in reqs), dtype=np.float64, count=n)
+            nrw = np.fromiter((r.num_request_waiting for r in reqs), dtype=np.float64, count=n)
+            nrr = np.fromiter((r.num_request_running for r in reqs), dtype=np.float64, count=n)
+            ntg = np.fromiter((r.num_tokens_generated for r in reqs), dtype=np.float64, count=n)
+            pcs = np.fromiter((r.prefix_cache_score for r in reqs), dtype=np.float64, count=n)
             if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
                 pti = np.fromiter((r.prefill_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
-                dti = np.fromiter((r.decode_tokens_in_flight  for r in reqs), dtype=np.float64, count=n)
+                dti = np.fromiter((r.decode_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
 
             # Snapshot model references under lock (no inference here).
             with self.lock:
@@ -765,64 +780,77 @@ class LightweightPredictor:
                     ttft_gated = self.ttft_gated
                     tpot_gated = self.tpot_gated
                 else:
-                    ttft_model  = self.ttft_model
-                    tpot_model  = self.tpot_model
+                    ttft_model = self.ttft_model
+                    tpot_model = self.tpot_model
                     ttft_scaler = self.ttft_scaler
                     tpot_scaler = self.tpot_scaler
 
             # Build DataFrames from dict-of-arrays: Pandas receives already-typed
             # numpy columns, skipping per-row type inference (the slow part of
             # pd.DataFrame(list_of_dicts)).
-            df_ttft_raw = pd.DataFrame({
-                'kv_cache_percentage': kv,
-                'input_token_length':  itl,
-                'num_request_waiting': nrw,
-                'num_request_running': nrr,
-                'prefix_cache_score':  pcs,
-            })
-            df_tpot_raw = pd.DataFrame({
-                'kv_cache_percentage': kv,
-                'input_token_length':  itl,
-                'num_request_waiting': nrw,
-                'num_request_running': nrr,
-                'num_tokens_generated': ntg,
-            })
+            df_ttft_raw = pd.DataFrame(
+                {
+                    "kv_cache_percentage": kv,
+                    "input_token_length": itl,
+                    "num_request_waiting": nrw,
+                    "num_request_running": nrr,
+                    "prefix_cache_score": pcs,
+                }
+            )
+            df_tpot_raw = pd.DataFrame(
+                {
+                    "kv_cache_percentage": kv,
+                    "input_token_length": itl,
+                    "num_request_waiting": nrw,
+                    "num_request_running": nrr,
+                    "num_tokens_generated": ntg,
+                }
+            )
             if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
-                df_ttft_raw['prefill_tokens_in_flight'] = pti
-                df_ttft_raw['decode_tokens_in_flight']  = dti
-                df_tpot_raw['prefill_tokens_in_flight'] = pti
-                df_tpot_raw['decode_tokens_in_flight']  = dti
+                df_ttft_raw["prefill_tokens_in_flight"] = pti
+                df_ttft_raw["decode_tokens_in_flight"] = dti
+                df_tpot_raw["prefill_tokens_in_flight"] = pti
+                df_tpot_raw["decode_tokens_in_flight"] = dti
 
             # Conditionally add pod_type column (only if any request uses it).
             if any(r.pod_type for r in reqs):
                 pod_types = [r.pod_type for r in reqs]
-                df_ttft_raw['pod_type'] = pod_types
-                df_tpot_raw['pod_type'] = pod_types
+                df_ttft_raw["pod_type"] = pod_types
+                df_tpot_raw["pod_type"] = pod_types
 
             if ensemble_active:
                 nrw_int = nrw.astype(int)
                 noqueue_idx = np.where(nrw_int == 0)[0]
-                queued_idx  = np.where(nrw_int  > 0)[0]
+                queued_idx = np.where(nrw_int > 0)[0]
 
                 ttft_results = np.zeros(n)
                 tpot_results = np.zeros(n)
 
                 for idx_arr, regime, ttft_m, tpot_m, ttft_s, tpot_s in [
-                    (noqueue_idx, "noqueue", ttft_gated.noqueue_model, tpot_gated.noqueue_model,
-                     ttft_gated.noqueue_scaler, tpot_gated.noqueue_scaler),
-                    (queued_idx, "queued", ttft_gated.queued_model, tpot_gated.queued_model,
-                     ttft_gated.queued_scaler, tpot_gated.queued_scaler),
+                    (
+                        noqueue_idx,
+                        "noqueue",
+                        ttft_gated.noqueue_model,
+                        tpot_gated.noqueue_model,
+                        ttft_gated.noqueue_scaler,
+                        tpot_gated.noqueue_scaler,
+                    ),
+                    (
+                        queued_idx,
+                        "queued",
+                        ttft_gated.queued_model,
+                        tpot_gated.queued_model,
+                        ttft_gated.queued_scaler,
+                        tpot_gated.queued_scaler,
+                    ),
                 ]:
                     if len(idx_arr) == 0:
                         continue
                     # .copy() so that _prepare_features_with_interaction can
                     # add columns without triggering SettingWithCopyWarning.
-                    sub_ttft = self._prepare_features_for_ensemble(
-                        df_ttft_raw.iloc[idx_arr].copy(), "ttft", regime)
-                    sub_tpot = self._prepare_features_for_ensemble(
-                        df_tpot_raw.iloc[idx_arr].copy(), "tpot", regime)
-                    ttft_p, tpot_p = self._predict_with_models(
-                        sub_ttft, sub_tpot, ttft_m, tpot_m, ttft_s, tpot_s)
+                    sub_ttft = self._prepare_features_for_ensemble(df_ttft_raw.iloc[idx_arr].copy(), "ttft", regime)
+                    sub_tpot = self._prepare_features_for_ensemble(df_tpot_raw.iloc[idx_arr].copy(), "tpot", regime)
+                    ttft_p, tpot_p = self._predict_with_models(sub_ttft, sub_tpot, ttft_m, tpot_m, ttft_s, tpot_s)
                     ttft_results[idx_arr] = ttft_p
                     tpot_results[idx_arr] = tpot_p
 
@@ -831,13 +859,17 @@ class LightweightPredictor:
                 df_ttft_batch = self._prepare_features_with_interaction(df_ttft_raw, "ttft")
                 df_tpot_batch = self._prepare_features_with_interaction(df_tpot_raw, "tpot")
                 return self._predict_with_models(
-                    df_ttft_batch, df_tpot_batch,
-                    ttft_model, tpot_model, ttft_scaler, tpot_scaler,
+                    df_ttft_batch,
+                    df_tpot_batch,
+                    ttft_model,
+                    tpot_model,
+                    ttft_scaler,
+                    tpot_scaler,
                 )
 
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception:
             logging.error("Error in predict_batch_fast():", exc_info=True)
             raise HTTPException(status_code=500, detail="Internal error during batch prediction")
 
@@ -866,7 +898,7 @@ class PredictionRequest(BaseModel):
     num_request_running: int = Field(..., ge=0)
     num_tokens_generated: int = Field(..., ge=0)
     prefix_cache_score: float = Field(..., ge=0.0, le=1.0)
-    pod_type: Optional[str] = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
+    pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
     prefill_tokens_in_flight: int = Field(default=0, ge=0)
     decode_tokens_in_flight: int = Field(default=0, ge=0)
 
@@ -878,7 +910,7 @@ class PredictionResponse(BaseModel):
     model_type: str
     objective_type: str
     quantile: float
-    last_model_load: Optional[datetime]
+    last_model_load: datetime | None
 
 
 class StatusResponse(BaseModel):
@@ -886,18 +918,18 @@ class StatusResponse(BaseModel):
     model_type: str
     objective_type: str
     quantile: float
-    last_model_load: Optional[datetime]
+    last_model_load: datetime | None
     training_server_url: str
     models_exist: dict
     ensemble_active: bool = False
 
 
 class BulkPredictionRequest(BaseModel):
-    requests: List[PredictionRequest] = Field(..., min_items=1, max_items=10000)
+    requests: list[PredictionRequest] = Field(..., min_items=1, max_items=10000)
 
 
 class BulkPredictionResponse(BaseModel):
-    predictions: List[PredictionResponse]
+    predictions: list[PredictionResponse]
     total_requests: int
     successful_predictions: int
     failed_predictions: int
@@ -911,8 +943,8 @@ class BulkPredictionError(BaseModel):
 
 
 class BulkPredictionResponseWithErrors(BaseModel):
-    predictions: List[Optional[PredictionResponse]]
-    errors: List[BulkPredictionError]
+    predictions: list[PredictionResponse | None]
+    errors: list[BulkPredictionError]
     total_requests: int
     successful_predictions: int
     failed_predictions: int
@@ -923,6 +955,7 @@ class BulkPredictionResponseWithErrors(BaseModel):
 # API endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/status", response_model=StatusResponse)
 async def status_endpoint():
     models_exist = {
@@ -930,15 +963,19 @@ async def status_endpoint():
         "tpot_model": os.path.exists(settings.LOCAL_TPOT_MODEL_PATH),
     }
     if predictor.model_type == ModelType.BAYESIAN_RIDGE:
-        models_exist.update({
-            "ttft_scaler": os.path.exists(settings.LOCAL_TTFT_SCALER_PATH),
-            "tpot_scaler": os.path.exists(settings.LOCAL_TPOT_SCALER_PATH),
-        })
+        models_exist.update(
+            {
+                "ttft_scaler": os.path.exists(settings.LOCAL_TTFT_SCALER_PATH),
+                "tpot_scaler": os.path.exists(settings.LOCAL_TPOT_SCALER_PATH),
+            }
+        )
     if settings.ENSEMBLE_MODE:
-        models_exist.update({
-            "ttft_gated": os.path.exists(settings.LOCAL_TTFT_GATED_MODEL_PATH),
-            "tpot_gated": os.path.exists(settings.LOCAL_TPOT_GATED_MODEL_PATH),
-        })
+        models_exist.update(
+            {
+                "ttft_gated": os.path.exists(settings.LOCAL_TTFT_GATED_MODEL_PATH),
+                "tpot_gated": os.path.exists(settings.LOCAL_TPOT_GATED_MODEL_PATH),
+            }
+        )
     return StatusResponse(
         is_ready=predictor.is_ready,
         model_type=predictor.model_type.value,
@@ -958,7 +995,7 @@ async def predict_endpoint(request: PredictionRequest):
         return PredictionResponse(
             ttft_ms=max(0, ttft_pred),
             tpot_ms=max(0, tpot_pred),
-            predicted_at=datetime.now(timezone.utc),
+            predicted_at=datetime.now(UTC),
             model_type=predictor.model_type.value,
             objective_type=predictor.objective_type.value,
             quantile=predictor.quantile,
@@ -986,11 +1023,11 @@ async def predict_bulk_strict_endpoint(request: BulkPredictionRequest):
         tpot_vals = np.maximum(tpot_preds, 0.0).tolist()
 
         # Cache metadata fields once instead of re-evaluating per prediction.
-        current_time  = datetime.now(timezone.utc)
-        _model_type   = predictor.model_type.value
-        _obj_type     = predictor.objective_type.value
-        _quantile     = predictor.quantile
-        _last_load    = predictor.last_load
+        current_time = datetime.now(UTC)
+        _model_type = predictor.model_type.value
+        _obj_type = predictor.objective_type.value
+        _quantile = predictor.quantile
+        _last_load = predictor.last_load
 
         # Build response as plain dicts — avoids 1000x Pydantic object construction.
         # ORJSONResponse serializes datetime, float, and str natively, much faster
@@ -1008,13 +1045,15 @@ async def predict_bulk_strict_endpoint(request: BulkPredictionRequest):
             for i in range(n)
         ]
 
-        return ORJSONResponse({
-            "predictions": predictions,
-            "total_requests": n,
-            "successful_predictions": n,
-            "failed_predictions": 0,
-            "processing_time_ms": (time.time() - start_time) * 1000,
-        })
+        return ORJSONResponse(
+            {
+                "predictions": predictions,
+                "total_requests": n,
+                "successful_predictions": n,
+                "failed_predictions": 0,
+                "processing_time_ms": (time.time() - start_time) * 1000,
+            }
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1030,8 +1069,12 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
     valid_indices = []
     errors = []
     required = [
-        'kv_cache_percentage', 'input_token_length', 'num_request_waiting',
-        'num_request_running', 'num_tokens_generated', 'prefix_cache_score',
+        "kv_cache_percentage",
+        "input_token_length",
+        "num_request_waiting",
+        "num_request_running",
+        "num_tokens_generated",
+        "prefix_cache_score",
     ]
 
     for i, pred_request in enumerate(request.requests):
@@ -1040,21 +1083,21 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
             for f in required:
                 if f not in features:
                     raise ValueError(f"Missing required feature: {f}")
-                if not isinstance(features[f], (int, float)):
+                if not isinstance(features[f], int | float):
                     raise ValueError(f"Invalid type for feature {f}: expected number")
             valid_requests.append(features)
             valid_indices.append(i)
         except Exception as e:
             errors.append(BulkPredictionError(index=i, error=str(e), request=pred_request))
 
-    predictions: List[Optional[PredictionResponse]] = [None] * len(request.requests)
+    predictions: list[PredictionResponse | None] = [None] * len(request.requests)
     successful_count = len(valid_requests)
     failed_count = len(errors)
 
     if valid_requests:
         try:
             ttft_preds, tpot_preds = predictor.predict_batch(valid_requests)
-            current_time = datetime.now(timezone.utc)
+            current_time = datetime.now(UTC)
             for batch_idx, original_idx in enumerate(valid_indices):
                 predictions[original_idx] = PredictionResponse(
                     ttft_ms=max(0, ttft_preds[batch_idx]),
@@ -1067,11 +1110,13 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
                 )
         except Exception as e:
             for original_idx in valid_indices:
-                errors.append(BulkPredictionError(
-                    index=original_idx,
-                    error=f"Batch prediction error: {e}",
-                    request=request.requests[original_idx],
-                ))
+                errors.append(
+                    BulkPredictionError(
+                        index=original_idx,
+                        error=f"Batch prediction error: {e}",
+                        request=request.requests[original_idx],
+                    )
+                )
                 predictions[original_idx] = None
             successful_count = 0
             failed_count = len(request.requests)
@@ -1114,7 +1159,12 @@ async def health_check():
 async def readiness_check():
     if not predictor.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Models are not ready")
-    return {"status": "ready", "model_type": predictor.model_type.value, "objective_type": predictor.objective_type.value, "quantile": predictor.quantile}
+    return {
+        "status": "ready",
+        "model_type": predictor.model_type.value,
+        "objective_type": predictor.objective_type.value,
+        "quantile": predictor.quantile,
+    }
 
 
 @app.get("/", include_in_schema=False)
