@@ -1,16 +1,13 @@
 # Project configuration
 PROJECT_NAME ?= llm-d-latency-predictor
 REGISTRY ?= ghcr.io/llm-d
-IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 PLATFORMS ?= linux/amd64,linux/arm64
 
-# Go configuration
-GOFLAGS ?=
-LDFLAGS ?= -s -w -X main.version=$(VERSION)
-
-# Tools
-GOLANGCI_LINT_VERSION ?= v2.8.0
+# Container image names (one image per service)
+PREDICTION_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)-prediction-server
+TRAINING_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)-training-server
+TEST_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)-test
 
 .DEFAULT_GOAL := help
 
@@ -22,52 +19,23 @@ help: ## Show this help message
 
 ##@ Development
 
-.PHONY: build
-build: ## Build the Go binary
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(PROJECT_NAME) .
+.PHONY: install
+install: ## Install the package (editable) and dev tools
+	pip install -e .
+	pip install ruff pytest pytest-asyncio
 
 .PHONY: test
-test: ## Run tests with race detection
-	go test -race -count=1 ./...
-
-.PHONY: test-coverage
-test-coverage: ## Run tests with coverage report
-	go test -race -coverprofile=coverage.out -covermode=atomic ./...
-	go tool cover -html=coverage.out -o coverage.html
+test: ## Run Python tests
+	pytest tests/
 
 .PHONY: lint
-lint: lint-go lint-python ## Run all linters
-
-.PHONY: lint-go
-lint-go: ## Run Go linter (golangci-lint v2)
-	golangci-lint run
-
-.PHONY: lint-python
-lint-python: ## Run Python linter (ruff) — skipped if no Python files found
-	@if ls *.py **/*.py 2>/dev/null | head -1 > /dev/null 2>&1; then \
-		ruff check . && ruff format --check .; \
-	else \
-		echo "No Python files found, skipping Python lint"; \
-	fi
+lint: ## Run Python linter (ruff)
+	ruff check .
+	ruff format --check .
 
 .PHONY: fmt
-fmt: ## Format Go and Python code
-	gofmt -w .
-	@if ls *.py **/*.py 2>/dev/null | head -1 > /dev/null 2>&1; then \
-		ruff format .; \
-	fi
-
-.PHONY: generate
-generate: ## Run go generate
-	go generate ./...
-
-.PHONY: vet
-vet: ## Run go vet
-	go vet ./...
-
-.PHONY: tidy
-tidy: ## Run go mod tidy
-	go mod tidy
+fmt: ## Format Python code
+	ruff format .
 
 .PHONY: pre-commit
 pre-commit: ## Run pre-commit hooks on all files
@@ -76,31 +44,54 @@ pre-commit: ## Run pre-commit hooks on all files
 ##@ Container
 
 .PHONY: image-build
-image-build: ## Build multi-arch container image (local only)
+image-build: image-build-prediction image-build-training image-build-test ## Build all service images
+
+.PHONY: image-build-prediction
+image-build-prediction: ## Build prediction-server image
 	docker buildx build \
 		--platform $(PLATFORMS) \
-		--tag $(IMAGE):$(VERSION) \
-		--tag $(IMAGE):latest \
+		-f Dockerfile-prediction \
+		--tag $(PREDICTION_IMAGE):$(VERSION) \
+		--tag $(PREDICTION_IMAGE):latest \
+		.
+
+.PHONY: image-build-training
+image-build-training: ## Build training-server image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		-f Dockerfile-training \
+		--tag $(TRAINING_IMAGE):$(VERSION) \
+		--tag $(TRAINING_IMAGE):latest \
+		.
+
+.PHONY: image-build-test
+image-build-test: ## Build test image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		-f Dockerfile-test \
+		--tag $(TEST_IMAGE):$(VERSION) \
+		--tag $(TEST_IMAGE):latest \
 		.
 
 .PHONY: image-push
-image-push: ## Build and push multi-arch container image
-	docker buildx build \
-		--platform $(PLATFORMS) \
-		--push \
+image-push: ## Build and push all service images
+	docker buildx build --platform $(PLATFORMS) --push \
+		-f Dockerfile-prediction \
 		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
-		--tag $(IMAGE):$(VERSION) \
-		--tag $(IMAGE):latest \
-		.
-
-##@ CI Helpers
-
-.PHONY: ci-lint
-ci-lint: ## CI: install and run golangci-lint
-	@which golangci-lint > /dev/null 2>&1 || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	golangci-lint run
+		--tag $(PREDICTION_IMAGE):$(VERSION) --tag $(PREDICTION_IMAGE):latest .
+	docker buildx build --platform $(PLATFORMS) --push \
+		-f Dockerfile-training \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(TRAINING_IMAGE):$(VERSION) --tag $(TRAINING_IMAGE):latest .
+	docker buildx build --platform $(PLATFORMS) --push \
+		-f Dockerfile-test \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(TEST_IMAGE):$(VERSION) --tag $(TEST_IMAGE):latest .
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	rm -rf bin/ coverage.out coverage.html
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	rm -rf .pytest_cache .ruff_cache

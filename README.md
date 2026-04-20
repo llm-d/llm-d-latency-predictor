@@ -11,7 +11,7 @@
 
 ## Prerequisites
 
-- Go 1.24+
+- Python 3.11+
 - Docker (for container builds)
 - [pre-commit](https://pre-commit.com/) (for local development)
 
@@ -25,8 +25,8 @@ cd llm-d-latency-predictor
 # Install pre-commit hooks
 pre-commit install
 
-# Build
-make build
+# Install Python dependencies
+make install
 
 # Run tests
 make test
@@ -43,12 +43,35 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, coding standa
 
 ```bash
 make help           # Show all available targets
-make build          # Build the project
-make test           # Run tests with race detection
-make lint           # Run Go and Python linters
-make fmt            # Format Go and Python code
-make image-build    # Build multi-arch container image
+make install        # Install Python dependencies
+make test           # Run Python tests
+make lint           # Run Python linter (ruff)
+make fmt            # Format Python code
+make image-build    # Build container images (prediction, training, test)
 make pre-commit     # Run pre-commit hooks
+```
+
+### Layout
+
+```
+src/llm_d_latency_predictor/
+  prediction_server.py    # FastAPI prediction server (serves latency predictions)
+  training_server.py      # FastAPI training server (trains models from request traces)
+tests/
+  test_dual_server_client.py  # integration / load-test client exercising both servers
+deploy/                   # Kubernetes manifests and kustomization
+Dockerfile-prediction     # Image for the prediction server
+Dockerfile-training       # Image for the training server
+Dockerfile-test           # Image that runs the test client as a Job
+build-deploy.sh           # Helper script for building images and deploying to GKE
+```
+
+The code is packaged as `llm_d_latency_predictor` — after `make install` (editable) or
+`pip install .`, the servers can be run as Python modules:
+
+```bash
+uvicorn llm_d_latency_predictor.prediction_server:app --port 8001
+uvicorn llm_d_latency_predictor.training_server:app --port 8000
 ```
 
 ## Architecture

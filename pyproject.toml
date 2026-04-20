@@ -1,33 +1,44 @@
-# Python tooling configuration
-# Only needed if this repo contains Python code
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-d-latency-predictor"
+version = "0.0.1"
+description = "Latency prediction service for the llm-d ecosystem"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
+# Minimal pragmatic selection for imported scientific/ML code.
+# Stricter rules (N, B, S, RET, SIM, C4, A) can be layered in via follow-up
+# PRs once the imported code has been refactored.
 select = [
     "E",     # pycodestyle errors
     "W",     # pycodestyle warnings
-    "F",     # pyflakes
-    "I",     # isort
-    "N",     # pep8-naming
-    "UP",    # pyupgrade
-    "B",     # flake8-bugbear
-    "S",     # flake8-bandit (security)
-    "A",     # flake8-builtins
-    "C4",    # flake8-comprehensions
-    "RET",   # flake8-return
-    "SIM",   # flake8-simplify
+    "F",     # pyflakes — real bugs (undefined names, etc.)
+    "I",     # isort — import ordering
+    "UP",    # pyupgrade — modern syntax
 ]
 ignore = [
-    "S101",  # assert used (OK in tests)
-    "S603",  # subprocess call with shell=false (OK)
-    "S607",  # start process with partial path (OK)
+    "E501",  # line too long — imported code has many lines slightly over 120
+    "F401",  # unused imports — try/except capability-detection pattern (xgboost/lightgbm)
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"
