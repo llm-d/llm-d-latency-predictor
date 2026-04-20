@@ -14,6 +14,15 @@ permissions:
 jobs:
   docker-build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: prediction-server
+            dockerfile: Dockerfile-prediction
+          - name: training-server
+            dockerfile: Dockerfile-training
+          - name: test
+            dockerfile: Dockerfile-test
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -23,6 +32,7 @@ jobs:
         run: |
           repo="${GITHUB_REPOSITORY##*/}"
           echo "project_name=$repo" >> "$GITHUB_OUTPUT"
+          echo "image_name=$repo-${{ matrix.service.name }}" >> "$GITHUB_OUTPUT"
 
       - name: Determine tag
         id: tag
@@ -42,12 +52,13 @@ jobs:
       - name: Build and push
         uses: ./.github/actions/docker-build-and-push
         with:
-          image-name: ${{ steps.meta.outputs.project_name }}
+          image-name: ${{ steps.meta.outputs.image_name }}
           tag: ${{ steps.tag.outputs.tag }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: ${{ steps.tag.outputs.prerelease }}
+          dockerfile: ${{ matrix.service.dockerfile }}
 
       - name: Trivy security scan
         uses: ./.github/actions/trivy-scan
         with:
-          image: ghcr.io/llm-d/${{ steps.meta.outputs.project_name }}:${{ steps.tag.outputs.tag }}
+          image: ghcr.io/llm-d/${{ steps.meta.outputs.image_name }}:${{ steps.tag.outputs.tag }}

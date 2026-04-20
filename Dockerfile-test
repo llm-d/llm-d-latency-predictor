@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install runtime + test dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    pytest \
+    pytest-asyncio \
+    requests \
+    httpx \
+    aiohttp
+
+# Copy test sources
+COPY tests ./tests
+
+RUN mkdir -p /test-results
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+CMD ["pytest", "-v", "-s", "tests/test_dual_server_client.py"]

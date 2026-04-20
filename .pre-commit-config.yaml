@@ -38,7 +38,7 @@ repos:
         language: system
         entry: hadolint
         args: [--failure-threshold, error]
-        files: Dockerfile(\\..*)?$
+        files: Dockerfile([-.].*)?$
         types: [file]
 
   # Markdown linting
