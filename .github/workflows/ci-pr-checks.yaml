@@ -42,6 +42,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install hadolint
+        run: |
+          curl -sL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 -o /usr/local/bin/hadolint
+          chmod +x /usr/local/bin/hadolint
+
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
 
