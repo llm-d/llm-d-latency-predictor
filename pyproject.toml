@@ -9,13 +9,46 @@ description = "Latency prediction service for the llm-d ecosystem"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
-dynamic = ["dependencies"]
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "numpy",
+    "pandas",
+    "pydantic",
+    "joblib",
+]
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+[project.optional-dependencies]
+prediction = [
+    "orjson",
+    "requests",
+    "xgboost",
+    "lightgbm",
+    "aiohttp",
+]
+training = [
+    "scikit-learn",
+    "xgboost",
+    "lightgbm",
+    "river",
+]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "requests",
+    "httpx",
+    "aiohttp",
+    "scipy",
+]
+dev = [
+    "llm-d-latency-predictor[prediction,training,test]",
+    "ruff",
+    "pre-commit",
+]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["prediction*", "training*", "common*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

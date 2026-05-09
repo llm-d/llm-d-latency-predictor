@@ -8,15 +8,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install runtime + test dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    requests \
-    httpx \
-    aiohttp
+# Install test dependencies from pyproject.toml
+COPY pyproject.toml README.md ./
+COPY common ./common
+COPY prediction ./prediction
+COPY training ./training
+RUN pip install --no-cache-dir '.[test]'
 
 # Copy test sources
 COPY tests ./tests
