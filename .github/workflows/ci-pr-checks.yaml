@@ -31,8 +31,6 @@ jobs:
   # Lint: runs all pre-commit hooks (ruff, shellcheck, hadolint, markdownlint, yamllint, etc.)
   lint:
     runs-on: ubuntu-latest
-    needs: check-code-changes
-    if: needs.check-code-changes.outputs.has_code_changes == 'true'
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
