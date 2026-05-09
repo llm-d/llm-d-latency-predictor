@@ -1,3 +1,3 @@
-"""Shared types and utilities for the llm-d latency predictor."""
+from pathlib import Path
 
-__version__ = "0.0.1"
+__version__ = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()

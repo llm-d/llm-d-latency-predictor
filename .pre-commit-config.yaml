@@ -28,6 +28,23 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  # Dependency pinning
+  - repo: https://github.com/jazzband/pip-tools
+    rev: v7.5.3
+    hooks:
+      - id: pip-compile
+        name: pip-compile prediction
+        args: [--generate-hashes, --output-file=prediction/requirements.txt, prediction/requirements.in]
+        files: ^prediction/requirements\.in$
+      - id: pip-compile
+        name: pip-compile training
+        args: [--generate-hashes, --output-file=training/requirements.txt, training/requirements.in]
+        files: ^training/requirements\.in$
+      - id: pip-compile
+        name: pip-compile tests
+        args: [--generate-hashes, --output-file=tests/requirements.txt, tests/requirements.in]
+        files: ^tests/requirements\.in$
+
   # Shell script linting (requires shellcheck installed)
   - repo: local
     hooks:

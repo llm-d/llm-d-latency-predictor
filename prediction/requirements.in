@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+numpy
+pandas
+pydantic
+joblib
+orjson
+requests
+xgboost
+lightgbm
+aiohttp
