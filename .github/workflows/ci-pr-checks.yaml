@@ -60,7 +60,7 @@ jobs:
         run: |
           changed=$(git diff --name-only origin/main...HEAD \
             | grep -E '^(common|prediction|training)/' \
-            | grep -v 'requirements\.txt$' \
+            | grep -v '(requirements\.ini$|requirements\.txt$)' \
             | grep -v 'Dockerfile$' || true)
 
           if [ -z "$changed" ]; then

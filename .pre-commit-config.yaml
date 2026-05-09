@@ -28,22 +28,28 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  # Dependency pinning
-  - repo: https://github.com/jazzband/pip-tools
-    rev: v7.5.3
+  # Dependency pinning (uv pip compile with cross-platform support)
+  # constraints.txt is compiled first from all .in files to ensure shared
+  # packages (pandas, numpy, etc.) resolve to the same version across components.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.30
     hooks:
       - id: pip-compile
-        name: pip-compile prediction
-        args: [--generate-hashes, --output-file=prediction/requirements.txt, prediction/requirements.in]
-        files: ^prediction/requirements\.in$
+        name: uv pip compile constraints
+        args: [prediction/requirements.in, training/requirements.in, tests/requirements.in, -o, constraints.txt, --universal, --python-version, "3.11"]
+        files: ^(prediction|training|tests)/requirements\.(in|txt)$
       - id: pip-compile
-        name: pip-compile training
-        args: [--generate-hashes, --output-file=training/requirements.txt, training/requirements.in]
-        files: ^training/requirements\.in$
+        name: uv pip compile prediction
+        args: [prediction/requirements.in, -o, prediction/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(prediction/requirements\.(in|txt)|constraints\.txt)$
       - id: pip-compile
-        name: pip-compile tests
-        args: [--generate-hashes, --output-file=tests/requirements.txt, tests/requirements.in]
-        files: ^tests/requirements\.in$
+        name: uv pip compile training
+        args: [training/requirements.in, -o, training/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(training/requirements\.(in|txt)|constraints\.txt)$
+      - id: pip-compile
+        name: uv pip compile tests
+        args: [tests/requirements.in, -o, tests/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(tests/requirements\.(in|txt)|constraints\.txt)$
 
   # Shell script linting
   - repo: https://github.com/shellcheck-py/shellcheck-py
