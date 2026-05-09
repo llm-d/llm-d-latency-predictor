@@ -65,7 +65,7 @@ jobs:
         run: |
           changed=$(git diff --name-only origin/main...HEAD \
             | grep -E '^(common|prediction|training)/' \
-            | grep -v '(requirements\.ini$|requirements\.txt$)' \
+            | grep -v '(requirements\.in$|requirements\.txt$)' \
             | grep -v 'Dockerfile$' || true)
 
           if [ -z "$changed" ]; then
@@ -76,12 +76,26 @@ jobs:
           echo "Source files changed:"
           echo "$changed"
 
-          if git diff --name-only origin/main...HEAD | grep -q '^VERSION$'; then
-            echo "VERSION file was updated."
-          else
+          if ! git diff --name-only origin/main...HEAD | grep -q '^VERSION$'; then
             echo "::error::Source changes detected but VERSION was not bumped. Please update the VERSION file."
             exit 1
           fi
+
+          new_version=$(cat VERSION)
+          old_version=$(git show origin/main:VERSION 2>/dev/null || echo "0.0.0")
+
+          if [ "$new_version" = "$old_version" ]; then
+            echo "::error::VERSION file was modified but the version ($new_version) is the same as main."
+            exit 1
+          fi
+
+          highest=$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -n1)
+          if [ "$highest" != "$new_version" ]; then
+            echo "::error::VERSION ($new_version) is not greater than main ($old_version)."
+            exit 1
+          fi
+
+          echo "VERSION bumped: $old_version -> $new_version"
 
   # Container: build (no push) to validate all service Dockerfiles
   container-build:
