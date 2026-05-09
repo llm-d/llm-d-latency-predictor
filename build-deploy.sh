@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +18,7 @@ set -e
 
 # Configuration
 PROJECT_ID="your-gcp-project-id"
-REGION="your-gcp-region"
+# REGION="your-gcp-region"  # currently unused
 REPOSITORY="your-artifact-registry-repo"
 TRAINING_IMAGE="latencypredictor-training-server"
 PREDICTION_IMAGE="latencypredictor-prediction-server"
@@ -45,7 +47,7 @@ echo_error() {
 check_files() {
     echo_status "Checking required files..."
 
-    local files=("src/llm_d_latency_predictor/training_server.py" "src/llm_d_latency_predictor/prediction_server.py" "requirements.txt" "pyproject.toml" "Dockerfile-training" "Dockerfile-prediction")
+    local files=("training/training_server.py" "prediction/prediction_server.py" "training/Dockerfile" "prediction/Dockerfile")
     for file in "${files[@]}"; do
         if [[ ! -f "$file" ]]; then
             echo_error "Required file $file not found!"
@@ -54,7 +56,7 @@ check_files() {
     done
 
     # Check for test-specific files
-    local test_files=("Dockerfile-test")
+    local test_files=("tests/Dockerfile")
     for file in "${test_files[@]}"; do
         if [[ ! -f "$file" ]]; then
             echo_warning "Test file $file not found - test image will not be built"
@@ -73,7 +75,7 @@ build_images() {
 
     # Build training server image
     echo_status "Building training server image..."
-    docker build -f Dockerfile-training -t ${TRAINING_IMAGE}:${TAG} .
+    docker build -f training/Dockerfile -t ${TRAINING_IMAGE}:${TAG} .
 
     # Tag for training server
     docker tag ${TRAINING_IMAGE}:${TAG} \
@@ -81,7 +83,7 @@ build_images() {
 
     # Build prediction server image
     echo_status "Building prediction server image..."
-    docker build -f Dockerfile-prediction -t ${PREDICTION_IMAGE}:${TAG} .
+    docker build -f prediction/Dockerfile -t ${PREDICTION_IMAGE}:${TAG} .
 
     # Tag for prediction server
     docker tag ${PREDICTION_IMAGE}:${TAG} \
@@ -90,7 +92,7 @@ build_images() {
     # Build test image if enabled
     if [[ "$TEST_BUILD_ENABLED" == "true" ]]; then
         echo_status "Building test image..."
-        docker build -f Dockerfile-test -t ${TEST_IMAGE}:${TAG} .
+        docker build -f tests/Dockerfile -t ${TEST_IMAGE}:${TAG} .
 
         # Tag for test image
         docker tag ${TEST_IMAGE}:${TAG} \
@@ -390,7 +392,7 @@ main() {
             echo ""
             echo "Commands:"
             echo "  check      - Check if required files exist"
-            echo "  build      - Build Docker images (including test if Dockerfile-test exists)"
+            echo "  build      - Build Docker images (including test if tests/Dockerfile exists)"
             echo "  push       - Push images to Artifact Registry"
             echo "  deploy     - Deploy to GKE"
             echo "  test-deploy- Deploy test job only"

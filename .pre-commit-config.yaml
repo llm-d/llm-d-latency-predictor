@@ -20,26 +20,41 @@ repos:
       - id: mixed-line-ending
       - id: check-case-conflict
 
-  # Shell script linting (requires shellcheck installed)
-  - repo: local
+  # Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Dependency pinning (uv pip compile with cross-platform support)
+  # Compiles from pyproject.toml [project.dependencies] and [project.optional-dependencies.test].
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.30
+    hooks:
+      - id: pip-compile
+        name: uv pip compile requirements
+        args: [pyproject.toml, -o, requirements.txt, --universal, --generate-hashes, --python-version, "3.11"]
+        files: ^(pyproject\.toml|requirements\.txt)$
+      - id: pip-compile
+        name: uv pip compile test requirements
+        args: [pyproject.toml, --extra, test, -o, tests/requirements.txt, --universal, --generate-hashes, --python-version, "3.11"]
+        files: ^(pyproject\.toml|tests/requirements\.txt)$
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        name: shellcheck
-        language: system
-        entry: shellcheck
         args: [-x, --severity=warning]
-        types: [shell]
 
-  # Dockerfile linting (requires hadolint installed)
-  - repo: local
+  # Dockerfile linting (runs via Docker — no local binary needed)
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
     hooks:
       - id: hadolint-docker
-        name: hadolint
-        language: system
-        entry: hadolint
         args: [--failure-threshold, error]
-        files: Dockerfile([-.].*)?$
-        types: [file]
 
   # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli

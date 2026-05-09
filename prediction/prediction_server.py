@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 from datetime import UTC, datetime
-from enum import StrEnum
 
 import joblib
 import numpy as np
@@ -58,16 +57,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
     logging.warning("LightGBM not available. Install with: pip install lightgbm")
 
-
-class ModelType(StrEnum):
-    BAYESIAN_RIDGE = "bayesian_ridge"
-    XGBOOST = "xgboost"
-    LIGHTGBM = "lightgbm"
-
-
-class ObjectiveType(StrEnum):
-    QUANTILE = "quantile"
-    MEAN = "mean"
+from common.types import ModelType, ObjectiveType, QueueGatedModel
 
 
 class PredictSettings:
@@ -100,20 +90,6 @@ class PredictSettings:
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     LOCAL_TTFT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TTFT_GATED_MODEL_PATH", "/local_models/ttft_gated.joblib")
     LOCAL_TPOT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TPOT_GATED_MODEL_PATH", "/local_models/tpot_gated.joblib")
-
-
-class QueueGatedModel:
-    """Wraps noqueue + queued sub-models into one joblib-serializable object.
-
-    At prediction time the caller checks num_request_waiting and picks the
-    appropriate sub-model + scaler from inside this wrapper.
-    """
-
-    def __init__(self, noqueue_model, queued_model, noqueue_scaler=None, queued_scaler=None):
-        self.noqueue_model = noqueue_model
-        self.queued_model = queued_model
-        self.noqueue_scaler = noqueue_scaler
-        self.queued_scaler = queued_scaler
 
 
 settings = PredictSettings()

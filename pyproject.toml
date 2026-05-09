@@ -1,24 +1,32 @@
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "llm-d-latency-predictor"
-version = "0.8.0"
-description = "Latency prediction service for the llm-d ecosystem"
-readme = "README.md"
-license = { text = "Apache-2.0" }
+dynamic = ["version"]
 requires-python = ">=3.11"
-dynamic = ["dependencies"]
+license = "Apache-2.0"
+description = "Latency prediction and training servers for llm-d"
+dependencies = [
+    "aiohttp",
+    "fastapi",
+    "joblib",
+    "lightgbm",
+    "numpy",
+    "orjson",
+    "pandas",
+    "pydantic",
+    "requests",
+    "river",
+    "scikit-learn",
+    "uvicorn[standard]",
+    "xgboost",
+]
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[project.optional-dependencies]
+test = [
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+    "scipy",
+]
 
 [tool.ruff]
 line-length = 120
@@ -31,15 +39,18 @@ target-version = "py311"
 select = [
     "E",     # pycodestyle errors
     "W",     # pycodestyle warnings
-    "F",     # pyflakes — real bugs (undefined names, etc.)
-    "I",     # isort — import ordering
-    "UP",    # pyupgrade — modern syntax
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
 ]
 ignore = [
-    "E501",  # line too long — imported code has many lines slightly over 120
-    "F401",  # unused imports — try/except capability-detection pattern (xgboost/lightgbm)
+    "E501",  # line too long
+    "F401",  # unused imports — try/except capability-detection pattern
 ]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
