@@ -69,7 +69,7 @@ deploy/                       # Kubernetes manifests and kustomization
 build-deploy.sh               # Helper script for building images and deploying to GKE
 ```
 
-After `make install` (editable) or `pip install .`, the servers can be run with:
+After `make install`, the servers can be run with:
 
 ```bash
 uvicorn prediction.prediction_server:app --port 8001

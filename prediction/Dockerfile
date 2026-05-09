@@ -6,11 +6,13 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the package with prediction extras
-COPY pyproject.toml README.md ./
+# Install prediction dependencies
+COPY prediction/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
 COPY common ./common
 COPY prediction ./prediction
-RUN pip install --no-cache-dir '.[prediction]'
 
 EXPOSE 8001
 

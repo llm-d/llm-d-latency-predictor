@@ -1,0 +1,22 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+# Minimal pragmatic selection for imported scientific/ML code.
+# Stricter rules (N, B, S, RET, SIM, C4, A) can be layered in via follow-up
+# PRs once the imported code has been refactored.
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+]
+ignore = [
+    "E501",  # line too long
+    "F401",  # unused imports — try/except capability-detection pattern
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"

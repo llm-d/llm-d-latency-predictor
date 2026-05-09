@@ -45,7 +45,7 @@ echo_error() {
 check_files() {
     echo_status "Checking required files..."
     
-    local files=("training/training_server.py" "prediction/prediction_server.py" "pyproject.toml" "training/Dockerfile" "prediction/Dockerfile")
+    local files=("training/training_server.py" "prediction/prediction_server.py" "training/Dockerfile" "prediction/Dockerfile")
     for file in "${files[@]}"; do
         if [[ ! -f "$file" ]]; then
             echo_error "Required file $file not found!"

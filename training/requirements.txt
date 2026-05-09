@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+numpy
+pandas
+pydantic
+joblib
+scikit-learn
+xgboost
+lightgbm
+river

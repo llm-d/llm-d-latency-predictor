@@ -8,12 +8,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install test dependencies from pyproject.toml
-COPY pyproject.toml README.md ./
-COPY common ./common
-COPY prediction ./prediction
-COPY training ./training
-RUN pip install --no-cache-dir '.[test]'
+# Install test dependencies
+COPY tests/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy test sources
 COPY tests ./tests

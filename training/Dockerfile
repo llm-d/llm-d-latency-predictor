@@ -6,11 +6,13 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the package with training extras
-COPY pyproject.toml README.md ./
+# Install training dependencies
+COPY training/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
 COPY common ./common
 COPY training ./training
-RUN pip install --no-cache-dir '.[training]'
 
 EXPOSE 8000
 

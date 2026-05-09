@@ -20,6 +20,14 @@ repos:
       - id: mixed-line-ending
       - id: check-case-conflict
 
+  # Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
   # Shell script linting (requires shellcheck installed)
   - repo: local
     hooks:

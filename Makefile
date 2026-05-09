@@ -20,8 +20,9 @@ help: ## Show this help message
 ##@ Development
 
 .PHONY: install
-install: ## Install the package (editable) and dev tools
-	pip install -e '.[dev]'
+install: ## Install dependencies and dev tools
+	pip install -r prediction/requirements.txt -r training/requirements.txt -r tests/requirements.txt
+	pip install ruff pre-commit
 
 .PHONY: test
 test: ## Run Python tests
