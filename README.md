@@ -53,7 +53,7 @@ make pre-commit     # Run pre-commit hooks
 
 ### Layout
 
-```
+```text
 common/
   types.py                    # Shared enums and model types
 prediction/
