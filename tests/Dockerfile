@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \
     curl \
@@ -8,15 +8,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install runtime + test dependencies
-COPY requirements.txt .
+# Install test dependencies
+COPY tests/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    requests \
-    httpx \
-    aiohttp
 
 # Copy test sources
 COPY tests ./tests

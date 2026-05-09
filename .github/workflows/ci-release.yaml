@@ -18,11 +18,11 @@ jobs:
       matrix:
         service:
           - name: prediction-server
-            dockerfile: Dockerfile-prediction
+            dockerfile: prediction/Dockerfile
           - name: training-server
-            dockerfile: Dockerfile-training
+            dockerfile: training/Dockerfile
           - name: test
-            dockerfile: Dockerfile-test
+            dockerfile: tests/Dockerfile
     steps:
       - name: Checkout source
         uses: actions/checkout@v6

@@ -20,13 +20,13 @@ help: ## Show this help message
 ##@ Development
 
 .PHONY: install
-install: ## Install the package (editable) and dev tools
-	pip install -e .
-	pip install ruff pytest pytest-asyncio
+install: ## Install dependencies and dev tools
+	pip install -r prediction/requirements.txt -r training/requirements.txt -r tests/requirements.txt
+	pip install ruff pre-commit
 
 .PHONY: test
 test: ## Run Python tests
-	pytest tests/
+	python -m pytest tests/
 
 .PHONY: lint
 lint: ## Run Python linter (ruff)
@@ -50,7 +50,7 @@ image-build: image-build-prediction image-build-training image-build-test ## Bui
 image-build-prediction: ## Build prediction-server image
 	docker buildx build \
 		--platform $(PLATFORMS) \
-		-f Dockerfile-prediction \
+		-f prediction/Dockerfile \
 		--tag $(PREDICTION_IMAGE):$(VERSION) \
 		--tag $(PREDICTION_IMAGE):latest \
 		.
@@ -59,7 +59,7 @@ image-build-prediction: ## Build prediction-server image
 image-build-training: ## Build training-server image
 	docker buildx build \
 		--platform $(PLATFORMS) \
-		-f Dockerfile-training \
+		-f training/Dockerfile \
 		--tag $(TRAINING_IMAGE):$(VERSION) \
 		--tag $(TRAINING_IMAGE):latest \
 		.
@@ -68,7 +68,7 @@ image-build-training: ## Build training-server image
 image-build-test: ## Build test image
 	docker buildx build \
 		--platform $(PLATFORMS) \
-		-f Dockerfile-test \
+		-f tests/Dockerfile \
 		--tag $(TEST_IMAGE):$(VERSION) \
 		--tag $(TEST_IMAGE):latest \
 		.
@@ -76,17 +76,17 @@ image-build-test: ## Build test image
 .PHONY: image-push
 image-push: ## Build and push all service images
 	docker buildx build --platform $(PLATFORMS) --push \
-		-f Dockerfile-prediction \
+		-f prediction/Dockerfile \
 		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--tag $(PREDICTION_IMAGE):$(VERSION) --tag $(PREDICTION_IMAGE):latest .
 	docker buildx build --platform $(PLATFORMS) --push \
-		-f Dockerfile-training \
+		-f training/Dockerfile \
 		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--tag $(TRAINING_IMAGE):$(VERSION) --tag $(TRAINING_IMAGE):latest .
 	docker buildx build --platform $(PLATFORMS) --push \
-		-f Dockerfile-test \
+		-f tests/Dockerfile \
 		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--tag $(TEST_IMAGE):$(VERSION) --tag $(TEST_IMAGE):latest .

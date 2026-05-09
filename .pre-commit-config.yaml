@@ -20,26 +20,50 @@ repos:
       - id: mixed-line-ending
       - id: check-case-conflict
 
-  # Shell script linting (requires shellcheck installed)
-  - repo: local
+  # Python linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Dependency pinning (uv pip compile with cross-platform support)
+  # constraints.txt is compiled first from all .in files to ensure shared
+  # packages (pandas, numpy, etc.) resolve to the same version across components.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.30
+    hooks:
+      - id: pip-compile
+        name: uv pip compile constraints
+        args: [prediction/requirements.in, training/requirements.in, tests/requirements.in, -o, constraints.txt, --universal, --python-version, "3.11"]
+        files: ^(prediction|training|tests)/requirements\.(in|txt)$
+      - id: pip-compile
+        name: uv pip compile prediction
+        args: [prediction/requirements.in, -o, prediction/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(prediction/requirements\.(in|txt)|constraints\.txt)$
+      - id: pip-compile
+        name: uv pip compile training
+        args: [training/requirements.in, -o, training/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(training/requirements\.(in|txt)|constraints\.txt)$
+      - id: pip-compile
+        name: uv pip compile tests
+        args: [tests/requirements.in, -o, tests/requirements.txt, --universal, --generate-hashes, --python-version, "3.11", -c, constraints.txt]
+        files: ^(tests/requirements\.(in|txt)|constraints\.txt)$
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        name: shellcheck
-        language: system
-        entry: shellcheck
         args: [-x, --severity=warning]
-        types: [shell]
 
-  # Dockerfile linting (requires hadolint installed)
-  - repo: local
+  # Dockerfile linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
     hooks:
-      - id: hadolint-docker
-        name: hadolint
-        language: system
-        entry: hadolint
+      - id: hadolint
         args: [--failure-threshold, error]
-        files: Dockerfile([-.].*)?$
-        types: [file]
 
   # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli

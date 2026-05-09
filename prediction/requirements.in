@@ -1,13 +1,11 @@
 fastapi
 uvicorn[standard]
-scikit-learn
 numpy
 pandas
-joblib
-river
 pydantic
+joblib
+orjson
 requests
 xgboost
-aiohttp
 lightgbm
-orjson
+aiohttp
