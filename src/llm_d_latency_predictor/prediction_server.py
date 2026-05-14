@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field
 from requests.adapters import HTTPAdapter
+from scipy.stats import norm
 from urllib3.util.retry import Retry
 
 try:
@@ -531,7 +532,7 @@ class LightweightPredictor:
             if self.objective_type == ObjectiveType.MEAN:
                 return ttft_pred_mean, tpot_pred_mean
 
-            std_factor = 1.28 if self.quantile == 0.9 else (2.0 if self.quantile == 0.95 else 0.674)
+            std_factor = norm.ppf(self.quantile)
             return (
                 ttft_pred_mean + std_factor * ttft_std,
                 tpot_pred_mean + std_factor * tpot_std,

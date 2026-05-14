@@ -28,6 +28,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
+from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 
@@ -789,7 +790,7 @@ class LatencyPredictor:
 
             # Quantile objective
             if self.model_type == ModelType.BAYESIAN_RIDGE:
-                std_factor = 1.28 if self.quantile == 0.9 else (2.0 if self.quantile == 0.95 else 0.674)
+                std_factor = norm.ppf(self.quantile)
                 _, y_std = model.predict(X, return_std=True)
                 y_pred = y_pred + std_factor * y_std
 
@@ -1201,8 +1202,7 @@ class LatencyPredictor:
                     if self.objective_type == ObjectiveType.MEAN:
                         return ttft_pred_mean[0], tpot_pred_mean[0], ttft_std[0], tpot_std[0]
 
-                    # Approximate quantile prediction by adding factor to mean
-                    std_factor = 1.28 if self.quantile == 0.9 else (2.0 if self.quantile == 0.95 else 0.674)
+                    std_factor = norm.ppf(self.quantile)
                     ttft_pred = ttft_pred_mean[0] + std_factor * ttft_std[0]
                     tpot_pred = tpot_pred_mean[0] + std_factor * tpot_std[0]
 
