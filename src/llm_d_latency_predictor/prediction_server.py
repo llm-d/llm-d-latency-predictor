@@ -926,7 +926,7 @@ class StatusResponse(BaseModel):
 
 
 class BulkPredictionRequest(BaseModel):
-    requests: list[PredictionRequest] = Field(..., min_items=1, max_items=10000)
+    requests: list[PredictionRequest] = Field(..., min_length=1, max_length=10000)
 
 
 class BulkPredictionResponse(BaseModel):
@@ -992,7 +992,7 @@ async def status_endpoint():
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_endpoint(request: PredictionRequest):
     try:
-        ttft_pred, tpot_pred = predictor.predict(request.dict())
+        ttft_pred, tpot_pred = predictor.predict(request.model_dump())
         return PredictionResponse(
             ttft_ms=max(0, ttft_pred),
             tpot_ms=max(0, tpot_pred),
@@ -1080,7 +1080,7 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
 
     for i, pred_request in enumerate(request.requests):
         try:
-            features = pred_request.dict()
+            features = pred_request.model_dump()
             for f in required:
                 if f not in features:
                     raise ValueError(f"Missing required feature: {f}")

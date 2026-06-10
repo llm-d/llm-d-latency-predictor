@@ -1853,7 +1853,7 @@ async def add_training_data_bulk(batch: BulkTrainingRequest):
       { "entries": [ { …TrainingEntry… }, { … }, … ] }
     """
     try:
-        predictor.add_training_samples([e.dict() for e in batch.entries])
+        predictor.add_training_samples([e.model_dump() for e in batch.entries])
         return {"message": f"Accepted {len(batch.entries)} training samples."}
     except Exception:
         logging.error("Failed to add bulk training data", exc_info=True)
@@ -1863,7 +1863,7 @@ async def add_training_data_bulk(batch: BulkTrainingRequest):
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_endpoint(request: PredictionRequest):
     try:
-        ttft_pred, tpot_pred, ttft_std, tpot_std = predictor.predict(request.dict())
+        ttft_pred, tpot_pred, ttft_std, tpot_std = predictor.predict(request.model_dump())
         ttft_pred = max(0, ttft_pred)
         tpot_pred = max(0, tpot_pred)
         ttft_bounds = (max(0, ttft_pred - 2 * ttft_std), ttft_pred + 2 * ttft_std)
