@@ -38,15 +38,18 @@ jobs:
         id: tag
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            echo "tag=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF##refs/tags/}"
+            prerelease="${{ github.event.release.prerelease }}"
           elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF##refs/tags/}"
+            # Semver pre-releases (v1.2.3-rc.1) contain '-'; never tag them 'latest'.
+            [[ "$tag" == *-* ]] && prerelease=true || prerelease=false
           else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            tag="latest"
+            prerelease=false
           fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Build and push
