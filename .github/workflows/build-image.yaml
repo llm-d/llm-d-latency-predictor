@@ -1,0 +1,47 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - 'OWNERS'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: prediction-server
+            dockerfile: Dockerfile-prediction
+          - name: training-server
+            dockerfile: Dockerfile-training
+          - name: test
+            dockerfile: Dockerfile-test
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          repo="${GITHUB_REPOSITORY##*/}"
+          echo "image_name=${repo}-${{ matrix.service.name }}-dev" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: ./.github/actions/docker-build-and-push
+        with:
+          image-name: ${{ steps.meta.outputs.image_name }}
+          tag: ${{ steps.meta.outputs.short_sha }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: "true"
+          dockerfile: ${{ matrix.service.dockerfile }}

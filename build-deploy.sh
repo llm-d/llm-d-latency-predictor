@@ -44,7 +44,7 @@ echo_error() {
 # Check if required files exist
 check_files() {
     echo_status "Checking required files..."
-    
+
     local files=("src/llm_d_latency_predictor/training_server.py" "src/llm_d_latency_predictor/prediction_server.py" "requirements.txt" "pyproject.toml" "Dockerfile-training" "Dockerfile-prediction")
     for file in "${files[@]}"; do
         if [[ ! -f "$file" ]]; then
@@ -52,7 +52,7 @@ check_files() {
             exit 1
         fi
     done
-    
+
     # Check for test-specific files
     local test_files=("Dockerfile-test")
     for file in "${test_files[@]}"; do
@@ -62,7 +62,7 @@ check_files() {
             return
         fi
     done
-    
+
     TEST_BUILD_ENABLED=true
     echo_status "All required files found (including test files)."
 }
@@ -70,7 +70,7 @@ check_files() {
 # Build Docker images
 build_images() {
     echo_status "Building Docker images..."
-    
+
     # Build training server image
     echo_status "Building training server image..."
     docker build -f Dockerfile-training -t ${TRAINING_IMAGE}:${TAG} .
@@ -78,7 +78,7 @@ build_images() {
     # Tag for training server
     docker tag ${TRAINING_IMAGE}:${TAG} \
         us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${TRAINING_IMAGE}:${TAG}
-    
+
     # Build prediction server image
     echo_status "Building prediction server image..."
     docker build -f Dockerfile-prediction -t ${PREDICTION_IMAGE}:${TAG} .
@@ -86,7 +86,7 @@ build_images() {
     # Tag for prediction server
     docker tag ${PREDICTION_IMAGE}:${TAG} \
         us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${PREDICTION_IMAGE}:${TAG}
-    
+
     # Build test image if enabled
     if [[ "$TEST_BUILD_ENABLED" == "true" ]]; then
         echo_status "Building test image..."
@@ -95,7 +95,7 @@ build_images() {
         # Tag for test image
         docker tag ${TEST_IMAGE}:${TAG} \
             us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${TEST_IMAGE}:${TAG}
-        
+
         echo_status "All images (including test) built successfully."
     else
         echo_status "Images built successfully (test image skipped)."
@@ -105,18 +105,18 @@ build_images() {
 # Push images to Artifact Registry
 push_images() {
     echo_status "Pushing images to Artifact Registry..."
-    
+
     # Configure Docker for Artifact Registry
     gcloud auth configure-docker us-docker.pkg.dev --quiet
-    
+
     # Push training server
     echo_status "Pushing training server image..."
     docker push us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${TRAINING_IMAGE}:${TAG}
-    
+
     # Push prediction server
     echo_status "Pushing prediction server image..."
     docker push us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${PREDICTION_IMAGE}:${TAG}
-    
+
     # Push test image if enabled
     if [[ "$TEST_BUILD_ENABLED" == "true" ]]; then
         echo_status "Pushing test image..."
@@ -130,41 +130,41 @@ push_images() {
 # Deploy to GKE
 deploy_to_gke() {
     echo_status "Deploying to GKE..."
-    
+
     # Apply the Kubernetes manifests
     kubectl apply -f dual-server-deployment.yaml
-    
+
     # Wait for deployments to be ready
     echo_status "Waiting for training server deployment..."
     kubectl rollout status deployment/training-server-deployment --timeout=300s
-    
+
     echo_status "Waiting for prediction server deployment..."
     kubectl rollout status deployment/prediction-server-deployment --timeout=300s
-    
+
     echo_status "Deployment completed successfully."
 }
 
 # Deploy test job
 deploy_test() {
     echo_status "Deploying test job..."
-    
+
     if [[ "$TEST_BUILD_ENABLED" != "true" ]]; then
         echo_warning "Test image not available. Skipping test deployment."
         return
     fi
-    
+
     # Check if test manifest exists
     if [[ ! -f "test-job.yaml" ]]; then
         echo_warning "test-job.yaml not found. Creating a basic test job..."
         create_test_manifest
     fi
-    
+
     # Delete existing test job if it exists
     kubectl delete job latency-predictor-test --ignore-not-found=true
-    
+
     # Apply test job
     kubectl apply -f test-job.yaml
-    
+
     echo_status "Test job deployed. Monitor with: kubectl logs -f job/latency-predictor-test"
 }
 
@@ -223,16 +223,16 @@ EOF
 # Run tests
 run_tests() {
     echo_status "Running tests..."
-    
+
     if [[ "$TEST_BUILD_ENABLED" != "true" ]]; then
         echo_warning "Test image not available. Running basic connectivity tests instead..."
         test_deployment
         return
     fi
-    
+
     # Deploy and run test job
     deploy_test
-    
+
     # Wait for job completion and show logs
     echo_status "Waiting for test job to complete..."
     kubectl wait --for=condition=complete job/latency-predictor-test --timeout=600s || {
@@ -241,10 +241,10 @@ run_tests() {
         kubectl logs job/latency-predictor-test
         return 1
     }
-    
+
     echo_status "Test job completed. Showing logs:"
     kubectl logs job/latency-predictor-test
-    
+
     # Clean up test job
     echo_status "Cleaning up test job..."
     kubectl delete job latency-predictor-test
@@ -253,28 +253,28 @@ run_tests() {
 # Get service information
 get_service_info() {
     echo_status "Getting service information..."
-    
+
     echo_status "Training Service:"
     kubectl get service training-service-external -o wide
-    
+
     echo_status "Prediction Service:"
     kubectl get service prediction-service -o wide
-    
+
     echo_status "Getting external IPs (may take a few minutes)..."
-    
+
     # Wait for external IPs
     echo_status "Waiting for training service external IP..."
     kubectl get service training-service-external --watch --timeout=300s &
     TRAINING_PID=$!
-    
+
     echo_status "Waiting for prediction service external IP..."
     kubectl get service prediction-service --watch --timeout=300s &
     PREDICTION_PID=$!
-    
+
     # Kill background processes after timeout
     sleep 10
     kill $TRAINING_PID $PREDICTION_PID 2>/dev/null || true
-    
+
     echo_status "Current service status:"
     kubectl get services
 }
@@ -282,20 +282,20 @@ get_service_info() {
 # Test the deployment (basic connectivity tests)
 test_deployment() {
     echo_status "Testing deployment..."
-    
+
     # Get prediction service external IP
     PREDICTION_IP=$(kubectl get service prediction-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-    
+
     if [[ -n "$PREDICTION_IP" ]]; then
         echo_status "Testing prediction endpoint at http://${PREDICTION_IP}/"
-        
+
         # Test health endpoint
         if curl -f -s "http://${PREDICTION_IP}/healthz" > /dev/null; then
             echo_status "Health check passed!"
         else
             echo_warning "Health check failed or service not ready yet."
         fi
-        
+
         # Test prediction endpoint
         echo_status "Testing prediction with sample data..."
         curl -X POST "http://${PREDICTION_IP}/predict" \
@@ -316,10 +316,10 @@ test_deployment() {
 # List built images
 list_images() {
     echo_status "Listing built images..."
-    
+
     echo_status "Local images:"
     docker images | grep -E "${TRAINING_IMAGE}|${PREDICTION_IMAGE}|${TEST_IMAGE}" || echo "No local images found"
-    
+
     echo_status "Remote images in Artifact Registry:"
     gcloud artifacts docker images list us-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY} \
         --include-tags --filter="package~(${TRAINING_IMAGE}|${PREDICTION_IMAGE}|${TEST_IMAGE})" || echo "No remote images found"
@@ -334,7 +334,7 @@ cleanup() {
 # Main execution
 main() {
     echo_status "Starting build and deployment process..."
-    
+
     case "${1:-all}" in
         "check")
             check_files
@@ -403,7 +403,7 @@ main() {
             exit 1
             ;;
     esac
-    
+
     echo_status "Process completed successfully!"
 }
 
