@@ -15,6 +15,10 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .
 
+# Pre-create the default model cache directory so the process can write to it
+# when running as an arbitrary non-root UID (e.g. OpenShift restricted-v2 SCC).
+RUN mkdir -p /local_models && chmod 777 /local_models
+
 EXPOSE 8001
 
 # Number of worker processes — configurable via env var
