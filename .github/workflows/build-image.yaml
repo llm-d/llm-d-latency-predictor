@@ -43,5 +43,5 @@ jobs:
           image-name: ${{ steps.meta.outputs.image_name }}
           tag: ${{ steps.meta.outputs.short_sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: "true"
+          prerelease: "false"
           dockerfile: ${{ matrix.service.dockerfile }}
