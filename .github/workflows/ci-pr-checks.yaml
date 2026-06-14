@@ -107,7 +107,13 @@ jobs:
       - name: Check imports
         run: |
           pip install -r requirements.txt --quiet
-          python -c "import prediction.prediction_server; import training.training_server; import common.types"
+          python -c "
+          import importlib.util
+          for mod in ['prediction.prediction_server', 'training.training_server', 'common.types']:
+              spec = importlib.util.find_spec(mod)
+              assert spec is not None, f'{mod} not found'
+              print(f'{mod}: {spec.origin}')
+          "
 
   # Container: build (no push) to validate all service Dockerfiles
   container-build:
