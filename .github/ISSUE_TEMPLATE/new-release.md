@@ -21,8 +21,7 @@ This document defines the process for releasing llm-d-latency-predictor.
 
 1. Permissions to push to the llm-d-latency-predictor repository.
 
-1. Membership in the `@llm-d/latency-predictor-release-managers` team. Tag protection on
-   `refs/tags/v*` restricts who can push release tags, which is what triggers
+1. Tag protection on `refs/tags/v*` restricts who can push release tags, which is what triggers
    the release build.
 
 1. Set the required environment variables based on the expected release number:
@@ -105,7 +104,6 @@ This document defines the process for releasing llm-d-latency-predictor.
 1. Pushing the tag triggers CI action to build and publish the latency predictor images:
    - `ghcr.io/llm-d/llm-d-latency-predictor-prediction-server`
    - `ghcr.io/llm-d/llm-d-latency-predictor-training-server`
-   - `ghcr.io/llm-d/llm-d-latency-predictor-test`
 1. Verify the [CI release workflow] completed successfully before proceeding.
 
 ### Create the release!
