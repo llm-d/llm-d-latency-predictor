@@ -322,6 +322,11 @@ class LatencyPredictor:
         _aci_target = 1.0 - settings.QUANTILE_ALPHA
         self.ttft_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
         self.tpot_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
+        # Coverage of the ACI-adjusted interval (qhat + c_t); the static
+        # *_coverage_scores answer "is there drift?", these answer "are we meeting
+        # the SLO despite it?".
+        self.ttft_aci_coverage_scores = deque(maxlen=5)
+        self.tpot_aci_coverage_scores = deque(maxlen=5)
 
         # Mean-objective metric tracking (store last 5 scores)
         self.ttft_mae_scores = deque(maxlen=5)
@@ -787,6 +792,10 @@ class LatencyPredictor:
                     self.ttft_coverage_scores.append(cov)
                 ttft_cov = cov
             if settings.ACI_ENABLED and ttft_scores is not None:
+                # Coverage of the served interval qhat + c_t (score <= c_t).
+                aci_cov = float(np.mean(ttft_scores <= self.ttft_aci.offset())) * 100.0
+                with self.lock:
+                    self.ttft_aci_coverage_scores.append(aci_cov)
                 self.ttft_aci.update_batch(ttft_scores)
 
         if tpot_test and tpot_model is not None:
@@ -798,6 +807,9 @@ class LatencyPredictor:
                     self.tpot_coverage_scores.append(cov)
                 tpot_cov = cov
             if settings.ACI_ENABLED and tpot_scores is not None:
+                aci_cov = float(np.mean(tpot_scores <= self.tpot_aci.offset())) * 100.0
+                with self.lock:
+                    self.tpot_aci_coverage_scores.append(aci_cov)
                 self.tpot_aci.update_batch(tpot_scores)
 
         return ttft_cov, tpot_cov
@@ -1856,6 +1868,11 @@ class LatencyPredictor:
                     lines.append(f"tpot_aci_alpha{{}} {self.tpot_aci.alpha:.6f}")
                     lines.append(f"ttft_aci_offset_ms{{}} {self.ttft_aci.offset():.6f}")
                     lines.append(f"tpot_aci_offset_ms{{}} {self.tpot_aci.offset():.6f}")
+                    # Coverage of the ACI-adjusted interval (confirms the SLO is met).
+                    for idx, c in enumerate(self.ttft_aci_coverage_scores):
+                        lines.append(f'ttft_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
+                    for idx, c in enumerate(self.tpot_aci_coverage_scores):
+                        lines.append(f'tpot_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
 
                 # 6) Violation rates (should be close to (1-quantile) * 100)
                 for idx, violation_rate in enumerate(self.ttft_violation_rates):
