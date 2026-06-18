@@ -509,7 +509,13 @@ class LatencyPredictor:
                         ttft_order = (
                             ["kv_cache_percentage", "input_token_length", "num_request_running"]
                             + _tif
-                            + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
+                            + [
+                                "prefix_cache_score",
+                                "effective_input_tokens",
+                                "prefill_density",
+                                "prefill_score_bucket",
+                                "pod_type_cat",
+                            ]
                         )
                     else:
                         ttft_order = (
@@ -521,7 +527,13 @@ class LatencyPredictor:
                                 "num_request_running",
                             ]
                             + _tif
-                            + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
+                            + [
+                                "prefix_cache_score",
+                                "effective_input_tokens",
+                                "prefill_density",
+                                "prefill_score_bucket",
+                                "pod_type_cat",
+                            ]
                         )
                     if list(features.columns) != ttft_order:
                         try:
@@ -700,7 +712,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
-                        + ["prefix_cache_score", "effective_input_tokens", "pod_type_cat"]
+                        + ["prefix_cache_score", "effective_input_tokens", "prefill_density", "pod_type_cat"]
                     )
                 else:
                     feature_cols = (
@@ -712,7 +724,13 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
-                        + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
+                        + [
+                            "prefix_cache_score",
+                            "effective_input_tokens",
+                            "prefill_density",
+                            "prefill_score_bucket",
+                            "pod_type_cat",
+                        ]
                     )
             else:
                 feature_cols = (
@@ -835,7 +853,13 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
-                        + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
+                        + [
+                            "prefix_cache_score",
+                            "effective_input_tokens",
+                            "prefill_density",
+                            "prefill_score_bucket",
+                            "pod_type_cat",
+                        ]
                     )
                     ttft_feature_cols_br = (
                         [
@@ -846,7 +870,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
-                        + ["prefix_cache_score", "effective_input_tokens"]
+                        + ["prefix_cache_score", "effective_input_tokens", "prefill_density"]
                     )
 
                     # Build X_ttft for all model types, then trim for BR
@@ -1284,6 +1308,7 @@ class LatencyPredictor:
                             "num_request_running",
                             "prefix_cache_score",
                             "effective_input_tokens",
+                            "prefill_density",
                             "prefill_score_bucket",
                         ]
                         importances = dict(zip(feature_names, self.ttft_model.feature_importances_))
@@ -1531,6 +1556,7 @@ class LatencyPredictor:
                     "decode_tokens_in_flight",
                     "prefix_cache_score",
                     "effective_input_tokens",
+                    "prefill_density",
                 ]
                 tpot_feats = [
                     "is_queued",
@@ -1553,6 +1579,7 @@ class LatencyPredictor:
                     "decode_tokens_in_flight",
                     "prefix_cache_score",
                     "effective_input_tokens",
+                    "prefill_density",
                     "prefill_score_bucket",
                     "pod_type_cat",
                 ]
