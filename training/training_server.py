@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import io
 import json
 import logging
 import os  # Added this import
+import random
+import tarfile
 import threading
 import time
 from collections import deque
@@ -24,7 +27,7 @@ import numpy as np
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
@@ -1438,6 +1441,14 @@ class LatencyPredictor:
                     self.ttft_model = joblib.load(settings.TTFT_MODEL_PATH)
                     if self.model_type == ModelType.BAYESIAN_RIDGE and os.path.exists(settings.TTFT_SCALER_PATH):
                         self.ttft_scaler = joblib.load(settings.TTFT_SCALER_PATH)
+                    meta_path = os.path.join(os.path.dirname(settings.TTFT_MODEL_PATH), "metadata.json")
+                    if os.path.exists(meta_path):
+                        try:
+                            with open(meta_path) as f:
+                                seed_meta = json.load(f)
+                            logging.info("Loaded seed model: %s", seed_meta)
+                        except Exception:
+                            logging.warning("Failed to read seed metadata from %s", meta_path)
                 else:
                     result = self._create_default_model("ttft")
                     if self.model_type == ModelType.BAYESIAN_RIDGE:
@@ -1844,6 +1855,46 @@ async def readiness_check():
     if not predictor.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Models are not ready.")
     return {"status": "ready"}
+
+
+@app.get("/model/export")
+async def export_models():
+    """Bundle trained models and metadata for seeding new deployments."""
+    if not predictor.is_ready:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Models are not ready.")
+
+    model_paths = list(
+        {
+            getattr(settings, k)
+            for k in dir(settings)
+            if k.endswith("_PATH") and getattr(settings, k).endswith(".joblib")
+        }
+    )
+
+    buf = io.BytesIO()
+    with predictor.lock:
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for path in model_paths:
+                if os.path.exists(path):
+                    tar.add(path, arcname=os.path.basename(path))
+            meta = {
+                "model_type": predictor.model_type.value,
+                "quantile_alpha": settings.QUANTILE_ALPHA,
+                "exported_at": datetime.now(UTC).isoformat(),
+                "ttft_samples": sum(len(d) for d in predictor.ttft_data_buckets.values()),
+                "tpot_samples": sum(len(d) for d in predictor.tpot_data_buckets.values()),
+            }
+            meta_bytes = json.dumps(meta, indent=2).encode()
+            info = tarfile.TarInfo(name="metadata.json")
+            info.size = len(meta_bytes)
+            tar.addfile(info, io.BytesIO(meta_bytes))
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/gzip",
+        headers={"Content-Disposition": "attachment; filename=seed-model.tar.gz"},
+    )
 
 
 @app.get("/metrics", status_code=status.HTTP_200_OK)
