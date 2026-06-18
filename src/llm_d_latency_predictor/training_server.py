@@ -141,6 +141,11 @@ class Settings:
     # Opt-in; no effect on the prediction path when disabled.
     ACI_ENABLED: bool = os.getenv("LATENCY_ACI_ENABLED", "false").lower() == "true"
     ACI_GAMMA: float = float(os.getenv("LATENCY_ACI_GAMMA", "0.02"))
+    # Conformity-score buffer length. The alpha_t step is asymmetric by design --
+    # down gamma*(1-target) on a miss vs up gamma*target on a cover -- so ACI widens
+    # into drift fast but relaxes out slowly, and after a transient the offset rides
+    # the buffer's top quantiles until it turns over. Size this to the drift timescale
+    # you care about rather than larger; rebase() already handles the retrain case.
     ACI_BUFFER: int = int(os.getenv("LATENCY_ACI_BUFFER", "1000"))
 
 
