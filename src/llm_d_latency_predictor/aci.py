@@ -38,19 +38,20 @@ class ACIState:
         return float(np.quantile(self.scores, 1.0 - self.alpha))
 
     def update_batch(self, scores) -> None:
-        """Step alpha_t once from a batch of (y - qhat) scores, using the realized
-        miss rate against the current offset, then fold the scores into the buffer.
+        """Apply a batch of (y - qhat) scores as sequential per-observation ACI
+        steps. For each score: evaluate the miss against the current offset, step
+        alpha_t, then fold the score into the buffer.
 
-        The batched form matches the continuous-coverage loop cadence (one step per
-        evaluation interval); the score buffer provides coarse reactivity and gamma
-        the fine adjustment.
+        Stepping per score (rather than once per batch) keeps the effective learning
+        rate independent of how many scores arrive per evaluation interval, so gamma
+        carries the same meaning here as in the per-request formulation. A single
+        per-batch step would scale the rate by 1/N and make gamma nearly inert at
+        the server's interval cadence.
         """
-        scores = np.asarray(scores, dtype=float)
-        if scores.size == 0:
-            return
-        miss_rate = float(np.mean(scores > self.offset()))
-        self.alpha = min(1.0, max(0.0, self.alpha + self.gamma * (self.target - miss_rate)))
-        self.scores.extend(scores.tolist())
+        for s in np.asarray(scores, dtype=float):
+            miss = 1.0 if s > self.offset() else 0.0
+            self.alpha = min(1.0, max(0.0, self.alpha + self.gamma * (self.target - miss)))
+            self.scores.append(float(s))
 
     def rebase(self) -> None:
         """Reset after a retrain. The buffered scores were computed against the old
