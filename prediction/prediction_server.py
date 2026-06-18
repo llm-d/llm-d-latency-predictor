@@ -362,7 +362,13 @@ class LightweightPredictor:
             feature_cols = (
                 ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + _tif
-                + ["prefix_cache_score", "effective_input_tokens", "prefill_density", "prefill_score_bucket", "pod_type_cat"]
+                + [
+                    "prefix_cache_score",
+                    "effective_input_tokens",
+                    "prefill_density",
+                    "prefill_score_bucket",
+                    "pod_type_cat",
+                ]
             )
             return df[feature_cols]
 
