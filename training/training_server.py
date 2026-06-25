@@ -187,6 +187,18 @@ def quantile_violation_rate(y_true, y_pred, quantile):
     return violation_rate * 100
 
 
+def _get_model_paths():
+    """Canonical mapping of model names to file paths."""
+    return {
+        "ttft": settings.TTFT_MODEL_PATH,
+        "tpot": settings.TPOT_MODEL_PATH,
+        "ttft_scaler": settings.TTFT_SCALER_PATH,
+        "tpot_scaler": settings.TPOT_SCALER_PATH,
+        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
+        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
+    }
+
+
 class LatencyPredictor:
     """
     Manages model training, prediction, and data handling.
@@ -1858,36 +1870,37 @@ async def readiness_check():
 
 
 @app.get("/model/export")
-async def export_models():
+def export_models():
     """Bundle trained models and metadata for seeding new deployments."""
     if not predictor.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Models are not ready.")
 
-    model_paths = list(
-        {
-            getattr(settings, k)
-            for k in dir(settings)
-            if k.endswith("_PATH") and getattr(settings, k).endswith(".joblib")
+    paths = _get_model_paths()
+
+    with predictor.lock:
+        snapshots = {}
+        for name, p in paths.items():
+            if os.path.exists(p):
+                with open(p, "rb") as f:
+                    snapshots[name] = f.read()
+        meta = {
+            "model_type": predictor.model_type.value,
+            "quantile_alpha": settings.QUANTILE_ALPHA,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "ttft_samples": sum(len(d) for d in predictor.ttft_data_buckets.values()),
+            "tpot_samples": sum(len(d) for d in predictor.tpot_data_buckets.values()),
         }
-    )
 
     buf = io.BytesIO()
-    with predictor.lock:
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for path in model_paths:
-                if os.path.exists(path):
-                    tar.add(path, arcname=os.path.basename(path))
-            meta = {
-                "model_type": predictor.model_type.value,
-                "quantile_alpha": settings.QUANTILE_ALPHA,
-                "exported_at": datetime.now(UTC).isoformat(),
-                "ttft_samples": sum(len(d) for d in predictor.ttft_data_buckets.values()),
-                "tpot_samples": sum(len(d) for d in predictor.tpot_data_buckets.values()),
-            }
-            meta_bytes = json.dumps(meta, indent=2).encode()
-            info = tarfile.TarInfo(name="metadata.json")
-            info.size = len(meta_bytes)
-            tar.addfile(info, io.BytesIO(meta_bytes))
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in snapshots.items():
+            info = tarfile.TarInfo(name=os.path.basename(paths[name]))
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        meta_bytes = json.dumps(meta, indent=2).encode()
+        meta_info = tarfile.TarInfo(name="metadata.json")
+        meta_info.size = len(meta_bytes)
+        tar.addfile(meta_info, io.BytesIO(meta_bytes))
 
     buf.seek(0)
     return StreamingResponse(
@@ -2129,14 +2142,7 @@ async def tpot_xgb_json():
 @app.get("/model/{model_name}/info")
 async def model_info(model_name: str):
     """Get model file information including last modified time."""
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     if model_name not in model_paths:
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_name}")
@@ -2164,14 +2170,7 @@ async def model_info(model_name: str):
 @app.get("/model/{model_name}/download")
 async def download_model(model_name: str):
     """Download a model file."""
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     if model_name not in model_paths:
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_name}")
@@ -2190,14 +2189,7 @@ async def download_model(model_name: str):
 async def list_models():
     """List all available models with their status."""
     models = {}
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     for model_name, model_path in model_paths.items():
         if os.path.exists(model_path):
