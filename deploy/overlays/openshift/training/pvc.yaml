@@ -1,0 +1,11 @@
+# PVC for trained models — uses the cluster-default StorageClass on OpenShift.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: training-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
