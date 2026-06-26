@@ -1,0 +1,9 @@
+# Drop the GKE nodepool selector from the test Job on OpenShift.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: latency-predictor-test
+spec:
+  template:
+    spec:
+      nodeSelector: null

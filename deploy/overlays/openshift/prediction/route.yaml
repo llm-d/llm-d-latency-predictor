@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: prediction-service
+  labels:
+    component: prediction
+spec:
+  to:
+    kind: Service
+    name: prediction-service
+  port:
+    targetPort: 8001
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
