@@ -32,6 +32,8 @@ from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 
+from llm_d_latency_predictor.aci import ACIState
+
 try:
     import xgboost as xgb
 
@@ -121,6 +123,30 @@ class Settings:
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     TTFT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TTFT_GATED_MODEL_PATH", "/tmp/models/ttft_gated.joblib")
     TPOT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TPOT_GATED_MODEL_PATH", "/tmp/models/tpot_gated.joblib")
+
+    # Experiment C — continuous coverage evaluation + calibration-triggered retraining.
+    # When > 0, a background loop re-evaluates coverage on the current model + test
+    # buffer every COVERAGE_EVAL_INTERVAL_SEC. If the EMA of |coverage - quantile_alpha|
+    # exceeds CALIBRATION_TRIGGER_THRESHOLD for CALIBRATION_TRIGGER_K consecutive
+    # evaluations, the next retrain fires immediately instead of waiting out the
+    # full RETRAINING_INTERVAL_SEC. Set COVERAGE_EVAL_INTERVAL_SEC=0 to disable.
+    COVERAGE_EVAL_INTERVAL_SEC: int = int(os.getenv("LATENCY_COVERAGE_EVAL_INTERVAL_SEC", 0))
+    CALIBRATION_TRIGGER_THRESHOLD: float = float(os.getenv("LATENCY_CALIBRATION_TRIGGER_THRESHOLD", "5.0"))
+    CALIBRATION_TRIGGER_K: int = int(os.getenv("LATENCY_CALIBRATION_TRIGGER_K", 2))
+    CALIBRATION_EMA_ALPHA: float = float(os.getenv("LATENCY_CALIBRATION_EMA_ALPHA", "0.3"))
+
+    # Adaptive Conformal Inference (#19). When enabled, a one-sided upper offset c_t
+    # is adapted online in the continuous-coverage loop and added to the served
+    # quantile in predict(), keeping interval coverage valid between retrains.
+    # Opt-in; no effect on the prediction path when disabled.
+    ACI_ENABLED: bool = os.getenv("LATENCY_ACI_ENABLED", "false").lower() == "true"
+    ACI_GAMMA: float = float(os.getenv("LATENCY_ACI_GAMMA", "0.02"))
+    # Conformity-score buffer length. The alpha_t step is asymmetric by design --
+    # down gamma*(1-target) on a miss vs up gamma*target on a cover -- so ACI widens
+    # into drift fast but relaxes out slowly, and after a transient the offset rides
+    # the buffer's top quantiles until it turns over. Size this to the drift timescale
+    # you care about rather than larger; rebase() already handles the retrain case.
+    ACI_BUFFER: int = int(os.getenv("LATENCY_ACI_BUFFER", "1000"))
 
 
 class QueueGatedModel:
@@ -297,6 +323,16 @@ class LatencyPredictor:
         self.ttft_violation_rates = deque(maxlen=5)
         self.tpot_violation_rates = deque(maxlen=5)
 
+        # Adaptive Conformal Inference state (one-sided upper, per target). See aci.py.
+        _aci_target = 1.0 - settings.QUANTILE_ALPHA
+        self.ttft_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
+        self.tpot_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
+        # Coverage of the ACI-adjusted interval (qhat + c_t); the static
+        # *_coverage_scores answer "is there drift?", these answer "are we meeting
+        # the SLO despite it?".
+        self.ttft_aci_coverage_scores = deque(maxlen=5)
+        self.tpot_aci_coverage_scores = deque(maxlen=5)
+
         # Mean-objective metric tracking (store last 5 scores)
         self.ttft_mae_scores = deque(maxlen=5)
         self.tpot_mae_scores = deque(maxlen=5)
@@ -320,6 +356,13 @@ class LatencyPredictor:
         self.last_retrain_time = None
         self._shutdown_event = threading.Event()
         self._training_thread: threading.Thread = None
+        # Experiment C — calibration trigger. The continuous coverage loop sets
+        # this when |coverage - quantile_alpha| EMA crosses
+        # CALIBRATION_TRIGGER_THRESHOLD; the training loop checks it during its
+        # inter-retrain sleep and fires an immediate retrain rather than waiting
+        # the rest of RETRAINING_INTERVAL_SEC.
+        self._calibration_trigger = threading.Event()
+        self._coverage_eval_thread: threading.Thread | None = None
 
     def _get_prefix_bucket(self, prefix_score: float) -> int:
         """Map prefix cache score to bucket index."""
@@ -714,6 +757,68 @@ class LatencyPredictor:
             logging.error(f"Error in _train_model_with_scaling: {e}", exc_info=True)
             raise
 
+    def _aci_apply(self, which: str, pred: float) -> float:
+        """Add the adaptive-conformal offset c_t to a quantile prediction.
+        No-op when ACI is disabled."""
+        if not settings.ACI_ENABLED:
+            return pred
+        aci = self.ttft_aci if which == "ttft" else self.tpot_aci
+        return pred + aci.offset()
+
+    def evaluate_current_coverage(self) -> tuple[float | None, float | None]:
+        """Re-evaluate coverage on the *currently loaded* model + test buffer,
+        without retraining. Appends to {ttft,tpot}_coverage_scores so /metrics
+        reflects up-to-date calibration between scheduled retrains. Returns
+        (ttft_cov, tpot_cov); either may be None if model/test data isn't ready.
+        Quantile-objective only — no-op under mean-objective.
+        """
+        if self.objective_type == ObjectiveType.MEAN:
+            return None, None
+        if not self.is_ready:
+            return None, None
+
+        with self.lock:
+            ttft_test = list(self.ttft_test_data)
+            tpot_test = list(self.tpot_test_data)
+            ttft_model = self.ttft_model
+            tpot_model = self.tpot_model
+            ttft_scaler = self.ttft_scaler
+            tpot_scaler = self.tpot_scaler
+
+        ttft_cov: float | None = None
+        tpot_cov: float | None = None
+
+        if ttft_test and ttft_model is not None:
+            _, cov, _, ttft_scores = self._calculate_metrics_on_test(
+                ttft_model, ttft_scaler, ttft_test, "ttft", "actual_ttft_ms"
+            )
+            if cov is not None:
+                with self.lock:
+                    self.ttft_coverage_scores.append(cov)
+                ttft_cov = cov
+            if settings.ACI_ENABLED and ttft_scores is not None:
+                # Coverage of the served interval qhat + c_t (score <= c_t).
+                aci_cov = float(np.mean(ttft_scores <= self.ttft_aci.offset())) * 100.0
+                with self.lock:
+                    self.ttft_aci_coverage_scores.append(aci_cov)
+                self.ttft_aci.update_batch(ttft_scores)
+
+        if tpot_test and tpot_model is not None:
+            _, cov, _, tpot_scores = self._calculate_metrics_on_test(
+                tpot_model, tpot_scaler, tpot_test, "tpot", "actual_tpot_ms"
+            )
+            if cov is not None:
+                with self.lock:
+                    self.tpot_coverage_scores.append(cov)
+                tpot_cov = cov
+            if settings.ACI_ENABLED and tpot_scores is not None:
+                aci_cov = float(np.mean(tpot_scores <= self.tpot_aci.offset())) * 100.0
+                with self.lock:
+                    self.tpot_aci_coverage_scores.append(aci_cov)
+                self.tpot_aci.update_batch(tpot_scores)
+
+        return ttft_cov, tpot_cov
+
     def _calculate_metrics_on_test(self, model, scaler, test_data, model_name, target_col):
         """Calculate metrics on test data.
 
@@ -726,7 +831,7 @@ class LatencyPredictor:
             df_raw = df_raw[df_raw[target_col] > 0]
 
             if len(df_raw) < 2:
-                return None, None, None
+                return None, None, None, None
 
             df_features = self._prepare_features_with_interaction(df_raw.copy(), model_type=model_name)
 
@@ -786,7 +891,7 @@ class LatencyPredictor:
             if self.objective_type == ObjectiveType.MEAN:
                 mae = float(np.mean(np.abs(y_true - y_pred)))
                 rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-                return mae, rmse, None
+                return mae, rmse, None, None
 
             # Quantile objective
             if self.model_type == ModelType.BAYESIAN_RIDGE:
@@ -797,11 +902,11 @@ class LatencyPredictor:
             ql = quantile_loss(y_true, y_pred, self.quantile)
             coverage = quantile_coverage(y_true, y_pred, self.quantile)
             violation_rate = quantile_violation_rate(y_true, y_pred, self.quantile)
-            return ql, coverage, violation_rate
+            return ql, coverage, violation_rate, (y_true - y_pred)
 
         except Exception as e:
             logging.error(f"Error calculating metrics: {e}", exc_info=True)
-            return None, None, None
+            return None, None, None, None
 
     def _create_default_model(self, model_type: str) -> tuple[BayesianRidge, StandardScaler] | (
         xgb.XGBRegressor | lgb.LGBMRegressor
@@ -935,7 +1040,7 @@ class LatencyPredictor:
                         # Evaluate on test set
                         m1 = m2 = m3 = None
                         if self.ttft_test_data:
-                            m1, m2, m3 = self._calculate_metrics_on_test(
+                            m1, m2, m3, _ = self._calculate_metrics_on_test(
                                 new_ttft_model, new_ttft_scaler, list(self.ttft_test_data), "ttft", "actual_ttft_ms"
                             )
 
@@ -983,7 +1088,7 @@ class LatencyPredictor:
                             new_tpot_scaler = None
 
                         # Evaluate on test set
-                        m1, m2, m3 = self._calculate_metrics_on_test(
+                        m1, m2, m3, _ = self._calculate_metrics_on_test(
                             new_tpot_model, new_tpot_scaler, list(self.tpot_test_data), "tpot", "actual_tpot_ms"
                         )
 
@@ -1124,6 +1229,11 @@ class LatencyPredictor:
 
                 if self.is_ready:
                     self.last_retrain_time = datetime.now(UTC)
+                    if settings.ACI_ENABLED:
+                        # Stale scores were computed against the old qhat; the fresh
+                        # model absorbs the shift, so rebase to avoid over-coverage.
+                        self.ttft_aci.rebase()
+                        self.tpot_aci.rebase()
                     try:
                         self._save_models_unlocked()
                     except Exception:
@@ -1206,7 +1316,12 @@ class LatencyPredictor:
                     ttft_pred = ttft_pred_mean[0] + std_factor * ttft_std[0]
                     tpot_pred = tpot_pred_mean[0] + std_factor * tpot_std[0]
 
-                    return ttft_pred, tpot_pred, ttft_std[0], tpot_std[0]
+                    return (
+                        self._aci_apply("ttft", ttft_pred),
+                        self._aci_apply("tpot", tpot_pred),
+                        ttft_std[0],
+                        tpot_std[0],
+                    )
 
                 elif self.model_type == ModelType.XGBOOST:
                     # XGBoost quantile regression directly predicts the quantile
@@ -1217,7 +1332,12 @@ class LatencyPredictor:
                     ttft_std = ttft_pred[0] * 0.1  # 10% of prediction as uncertainty estimate
                     tpot_std = tpot_pred[0] * 0.1
 
-                    return ttft_pred[0], tpot_pred[0], ttft_std, tpot_std
+                    return (
+                        self._aci_apply("ttft", ttft_pred[0]),
+                        self._aci_apply("tpot", tpot_pred[0]),
+                        ttft_std,
+                        tpot_std,
+                    )
 
                 else:  # LightGBM with quantile regression
                     # LightGBM quantile regression directly predicts the quantile
@@ -1228,7 +1348,12 @@ class LatencyPredictor:
                     ttft_std = ttft_pred[0] * 0.1  # 10% of prediction as uncertainty estimate
                     tpot_std = tpot_pred[0] * 0.1
 
-                    return ttft_pred[0], tpot_pred[0], ttft_std, tpot_std
+                    return (
+                        self._aci_apply("ttft", ttft_pred[0]),
+                        self._aci_apply("tpot", tpot_pred[0]),
+                        ttft_std,
+                        tpot_std,
+                    )
 
         except ValueError as ve:
             logging.warning(f"Client error in predict(): {ve}")
@@ -1740,6 +1865,20 @@ class LatencyPredictor:
                 for idx, coverage in enumerate(self.tpot_coverage_scores):
                     lines.append(f'tpot_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
 
+                # Adaptive Conformal Inference (#19): alpha_t doubles as a drift
+                # detector (drifts off target when the model is miscalibrated);
+                # offset_ms is the added interval width c_t.
+                if settings.ACI_ENABLED:
+                    lines.append(f"ttft_aci_alpha{{}} {self.ttft_aci.alpha:.6f}")
+                    lines.append(f"tpot_aci_alpha{{}} {self.tpot_aci.alpha:.6f}")
+                    lines.append(f"ttft_aci_offset_ms{{}} {self.ttft_aci.offset():.6f}")
+                    lines.append(f"tpot_aci_offset_ms{{}} {self.tpot_aci.offset():.6f}")
+                    # Coverage of the ACI-adjusted interval (confirms the SLO is met).
+                    for idx, c in enumerate(self.ttft_aci_coverage_scores):
+                        lines.append(f'ttft_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
+                    for idx, c in enumerate(self.tpot_aci_coverage_scores):
+                        lines.append(f'tpot_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
+
                 # 6) Violation rates (should be close to (1-quantile) * 100)
                 for idx, violation_rate in enumerate(self.ttft_violation_rates):
                     lines.append(f'ttft_violation_rate_percent{{idx="{idx}"}} {violation_rate:.6f}')
@@ -1824,9 +1963,83 @@ def continuous_training_loop():
             predictor.train()
         except Exception:
             logging.error("Error in periodic retraining", exc_info=True)
-        if predictor._shutdown_event.wait(timeout=settings.RETRAINING_INTERVAL_SEC):
-            break
+
+        # Sleep the retrain interval in 1-second slices so a calibration trigger
+        # (set by continuous_coverage_loop) can short-circuit the wait. Shutdown
+        # still takes precedence.
+        slept = 0.0
+        slice_sec = 1.0
+        while slept < settings.RETRAINING_INTERVAL_SEC:
+            if predictor._shutdown_event.is_set():
+                logging.info("Training loop exiting (shutdown).")
+                return
+            if predictor._calibration_trigger.is_set():
+                predictor._calibration_trigger.clear()
+                logging.info(
+                    f"Retraining triggered by calibration deviation after {slept:.1f}s of "
+                    f"{settings.RETRAINING_INTERVAL_SEC}s scheduled interval"
+                )
+                break
+            time.sleep(slice_sec)
+            slept += slice_sec
     logging.info("Training loop exiting.")
+
+
+# --- Continuous Coverage Evaluation Loop (Experiment C) ---
+def continuous_coverage_loop():
+    """Periodically re-evaluates calibration of the currently loaded model
+    against the test buffer. Detects drift between scheduled retrains and
+    sets _calibration_trigger when an EMA of |coverage - quantile_alpha|
+    crosses CALIBRATION_TRIGGER_THRESHOLD for K consecutive evaluations.
+    No-op when COVERAGE_EVAL_INTERVAL_SEC <= 0.
+    """
+    if settings.COVERAGE_EVAL_INTERVAL_SEC <= 0:
+        logging.info("Continuous coverage evaluation disabled (COVERAGE_EVAL_INTERVAL_SEC=0).")
+        return
+
+    # Wait long enough for the first train() to populate models + initial coverage.
+    time.sleep(15)
+    target_pct = settings.QUANTILE_ALPHA * 100
+    alpha = settings.CALIBRATION_EMA_ALPHA
+    ttft_dev_ema = 0.0
+    tpot_dev_ema = 0.0
+    consecutive_bad = 0
+
+    logging.info(
+        f"Continuous coverage loop started "
+        f"(eval_interval={settings.COVERAGE_EVAL_INTERVAL_SEC}s, "
+        f"target={target_pct:.0f}%, threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp, "
+        f"k={settings.CALIBRATION_TRIGGER_K}, ema_alpha={alpha:.2f})"
+    )
+
+    while not predictor._shutdown_event.is_set():
+        try:
+            ttft_cov, tpot_cov = predictor.evaluate_current_coverage()
+            if ttft_cov is not None:
+                ttft_dev_ema = (1 - alpha) * ttft_dev_ema + alpha * abs(ttft_cov - target_pct)
+            if tpot_cov is not None:
+                tpot_dev_ema = (1 - alpha) * tpot_dev_ema + alpha * abs(tpot_cov - target_pct)
+            max_dev = max(ttft_dev_ema, tpot_dev_ema)
+            if max_dev > settings.CALIBRATION_TRIGGER_THRESHOLD:
+                consecutive_bad += 1
+                logging.info(
+                    f"Coverage drift: ttft_cov={ttft_cov} tpot_cov={tpot_cov} "
+                    f"ttft_dev_ema={ttft_dev_ema:.2f} tpot_dev_ema={tpot_dev_ema:.2f} "
+                    f"consecutive_bad={consecutive_bad}/{settings.CALIBRATION_TRIGGER_K}"
+                )
+                if consecutive_bad >= settings.CALIBRATION_TRIGGER_K:
+                    logging.warning(
+                        f"Calibration trigger fired (max_dev={max_dev:.2f}pp > "
+                        f"threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp). Requesting immediate retrain."
+                    )
+                    predictor._calibration_trigger.set()
+                    consecutive_bad = 0  # one trigger per drift event
+            else:
+                consecutive_bad = 0
+        except Exception:
+            logging.error("Error in continuous coverage loop", exc_info=True)
+        predictor._shutdown_event.wait(timeout=settings.COVERAGE_EVAL_INTERVAL_SEC)
+    logging.info("Continuous coverage loop exiting.")
 
 
 # --- FastAPI Events ---
@@ -1838,6 +2051,13 @@ async def startup_event():
     predictor._training_thread = t
     t.start()
     logging.info("Background training started.")
+
+    # Experiment C — start continuous coverage evaluation only when enabled.
+    if settings.COVERAGE_EVAL_INTERVAL_SEC > 0:
+        ct = threading.Thread(target=continuous_coverage_loop, daemon=True)
+        predictor._coverage_eval_thread = ct
+        ct.start()
+        logging.info("Continuous coverage evaluation thread started.")
 
 
 @app.on_event("shutdown")
