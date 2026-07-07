@@ -32,6 +32,8 @@ from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 
+from llm_d_latency_predictor.calibration import CalibrationTrigger
+
 try:
     import xgboost as xgb
 
@@ -1918,42 +1920,35 @@ def continuous_coverage_loop():
     # Wait long enough for the first train() to populate models + initial coverage.
     time.sleep(15)
     target_pct = settings.QUANTILE_ALPHA * 100
-    alpha = settings.CALIBRATION_EMA_ALPHA
-    ttft_dev_ema = 0.0
-    tpot_dev_ema = 0.0
-    consecutive_bad = 0
+    trigger = CalibrationTrigger(
+        target_pct=target_pct,
+        threshold=settings.CALIBRATION_TRIGGER_THRESHOLD,
+        k=settings.CALIBRATION_TRIGGER_K,
+        ema_alpha=settings.CALIBRATION_EMA_ALPHA,
+    )
 
     logging.info(
         f"Continuous coverage loop started "
         f"(eval_interval={settings.COVERAGE_EVAL_INTERVAL_SEC}s, "
         f"target={target_pct:.0f}%, threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp, "
-        f"k={settings.CALIBRATION_TRIGGER_K}, ema_alpha={alpha:.2f})"
+        f"k={settings.CALIBRATION_TRIGGER_K}, ema_alpha={settings.CALIBRATION_EMA_ALPHA:.2f})"
     )
 
     while not predictor._shutdown_event.is_set():
         try:
             ttft_cov, tpot_cov = predictor.evaluate_current_coverage()
-            if ttft_cov is not None:
-                ttft_dev_ema = (1 - alpha) * ttft_dev_ema + alpha * abs(ttft_cov - target_pct)
-            if tpot_cov is not None:
-                tpot_dev_ema = (1 - alpha) * tpot_dev_ema + alpha * abs(tpot_cov - target_pct)
-            max_dev = max(ttft_dev_ema, tpot_dev_ema)
-            if max_dev > settings.CALIBRATION_TRIGGER_THRESHOLD:
-                consecutive_bad += 1
-                logging.info(
-                    f"Coverage drift: ttft_cov={ttft_cov} tpot_cov={tpot_cov} "
-                    f"ttft_dev_ema={ttft_dev_ema:.2f} tpot_dev_ema={tpot_dev_ema:.2f} "
-                    f"consecutive_bad={consecutive_bad}/{settings.CALIBRATION_TRIGGER_K}"
+            fired = trigger.update(ttft_cov, tpot_cov, predictor.last_retrain_time)
+            logging.info(
+                f"Coverage drift: ttft_cov={ttft_cov} tpot_cov={tpot_cov} "
+                f"max_dev={trigger.max_dev:.2f} consecutive_bad={trigger.consecutive_bad}/{settings.CALIBRATION_TRIGGER_K}"
+                f"{' (awaiting retrain)' if trigger.awaiting_retrain else ''}"
+            )
+            if fired:
+                logging.warning(
+                    f"Calibration trigger fired (max_dev={trigger.max_dev:.2f}pp > "
+                    f"threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp). Requesting immediate retrain."
                 )
-                if consecutive_bad >= settings.CALIBRATION_TRIGGER_K:
-                    logging.warning(
-                        f"Calibration trigger fired (max_dev={max_dev:.2f}pp > "
-                        f"threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp). Requesting immediate retrain."
-                    )
-                    predictor._calibration_trigger.set()
-                    consecutive_bad = 0  # one trigger per drift event
-            else:
-                consecutive_bad = 0
+                predictor._calibration_trigger.set()
         except Exception:
             logging.error("Error in continuous coverage loop", exc_info=True)
         predictor._shutdown_event.wait(timeout=settings.COVERAGE_EVAL_INTERVAL_SEC)
