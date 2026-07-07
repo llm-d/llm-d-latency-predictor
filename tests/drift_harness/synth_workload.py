@@ -32,13 +32,14 @@ from dataclasses import dataclass
 @dataclass
 class Regime:
     """Linear-noise model for synthetic ttft/tpot latency."""
+
     name: str
     ttft_intercept: float
-    ttft_alpha_input: float      # per input token
-    ttft_beta_waiting: float     # per queued request
+    ttft_alpha_input: float  # per input token
+    ttft_beta_waiting: float  # per queued request
     tpot_intercept: float
     tpot_gamma_generated: float  # per generated token
-    tpot_delta_running: float    # per running request
+    tpot_delta_running: float  # per running request
     sigma_ttft: float
     sigma_tpot: float
 
@@ -54,6 +55,7 @@ BASELINE = Regime(
     sigma_ttft=2.0,
     sigma_tpot=0.5,
 )
+
 
 def make_drift_regime(magnitude: float) -> Regime:
     """Scale baseline slope coefficients by `magnitude`. Intercepts and noise stay put.
@@ -253,7 +255,7 @@ def main() -> int:
 
         time.sleep(interval)
 
-    print(f"done: posted={posted} in {time.time()-start:.1f}s", flush=True)
+    print(f"done: posted={posted} in {time.time() - start:.1f}s", flush=True)
     return 0
 
 

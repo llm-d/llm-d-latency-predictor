@@ -24,12 +24,8 @@ import sys
 import time
 import urllib.request
 
-COV_RE = re.compile(
-    r'(?P<name>(?:ttft|tpot)_coverage_percent)\{idx="(?P<idx>\d+)"\}\s+(?P<value>[\d.eE+-]+)'
-)
-QL_RE = re.compile(
-    r'(?P<name>(?:ttft|tpot)_quantile_loss)\{idx="(?P<idx>\d+)"\}\s+(?P<value>[\d.eE+-]+)'
-)
+COV_RE = re.compile(r'(?P<name>(?:ttft|tpot)_coverage_percent)\{idx="(?P<idx>\d+)"\}\s+(?P<value>[\d.eE+-]+)')
+QL_RE = re.compile(r'(?P<name>(?:ttft|tpot)_quantile_loss)\{idx="(?P<idx>\d+)"\}\s+(?P<value>[\d.eE+-]+)')
 
 
 def fetch_metrics(url: str) -> str:
@@ -81,11 +77,19 @@ def main() -> int:
 
     with open(args.output, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow([
-            "elapsed_sec",
-            "ttft_cov_latest", "ttft_cov_mean5", "tpot_cov_latest", "tpot_cov_mean5",
-            "ttft_ql_latest", "ttft_ql_mean5", "tpot_ql_latest", "tpot_ql_mean5",
-        ])
+        w.writerow(
+            [
+                "elapsed_sec",
+                "ttft_cov_latest",
+                "ttft_cov_mean5",
+                "tpot_cov_latest",
+                "tpot_cov_mean5",
+                "ttft_ql_latest",
+                "ttft_ql_mean5",
+                "tpot_ql_latest",
+                "tpot_ql_mean5",
+            ]
+        )
         while True:
             elapsed = time.time() - start
             if elapsed > args.duration:
@@ -97,11 +101,19 @@ def main() -> int:
             except Exception as e:
                 print(f"[{elapsed:7.1f}s] scrape error: {e}", file=sys.stderr, flush=True)
                 ttft_c, tpot_c, ttft_q, tpot_q = [], [], [], []
-            w.writerow([
-                f"{elapsed:.1f}",
-                latest(ttft_c), mean5(ttft_c), latest(tpot_c), mean5(tpot_c),
-                latest(ttft_q), mean5(ttft_q), latest(tpot_q), mean5(tpot_q),
-            ])
+            w.writerow(
+                [
+                    f"{elapsed:.1f}",
+                    latest(ttft_c),
+                    mean5(ttft_c),
+                    latest(tpot_c),
+                    mean5(tpot_c),
+                    latest(ttft_q),
+                    mean5(ttft_q),
+                    latest(tpot_q),
+                    mean5(tpot_q),
+                ]
+            )
             f.flush()
             time.sleep(args.interval)
 
