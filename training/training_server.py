@@ -1896,10 +1896,12 @@ def export_models():
         for name, data in snapshots.items():
             info = tarfile.TarInfo(name=os.path.basename(paths[name]))
             info.size = len(data)
+            info.mtime = int(time.time())
             tar.addfile(info, io.BytesIO(data))
         meta_bytes = json.dumps(meta, indent=2).encode()
         meta_info = tarfile.TarInfo(name="metadata.json")
         meta_info.size = len(meta_bytes)
+        meta_info.mtime = int(time.time())
         tar.addfile(meta_info, io.BytesIO(meta_bytes))
 
     buf.seek(0)

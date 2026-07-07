@@ -2063,6 +2063,9 @@ def test_model_export():
         assert "exported_at" in meta, "exported_at missing from metadata"
         print(f"  Metadata: model_type={meta['model_type']}, samples={meta.get('ttft_samples', 'n/a')}")
 
+        for member in tar.getmembers():
+            assert member.mtime > 0, f"{member.name} has mtime=0 (would break sync freshness checks)"
+
     print(f"✓ Model export passed: {len(joblib_files)} model files + metadata")
 
 
