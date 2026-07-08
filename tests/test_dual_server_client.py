@@ -2056,7 +2056,9 @@ def test_model_export():
         assert len(joblib_files) > 0, "No .joblib model files in archive"
 
         gated_files = [n for n in names if "gated" in n]
-        assert not gated_files, f"Gated models must not be in seed export (seed load path never uses them): {gated_files}"
+        assert not gated_files, (
+            f"Gated models must not be in seed export (seed load path never uses them): {gated_files}"
+        )
 
         meta_member = tar.getmember("metadata.json")
         meta_file = tar.extractfile(meta_member)

@@ -1879,11 +1879,7 @@ def export_models():
     # loads them, but the prediction server syncs them on file existence and
     # would then dispatch all traffic through the source deployment's frozen
     # gate, masking local base-model retraining until ensemble_active flips.
-    paths = {
-        name: path
-        for name, path in _get_model_paths().items()
-        if name not in ("ttft_gated", "tpot_gated")
-    }
+    paths = {name: path for name, path in _get_model_paths().items() if name not in ("ttft_gated", "tpot_gated")}
 
     with predictor.lock:
         snapshots = {}
