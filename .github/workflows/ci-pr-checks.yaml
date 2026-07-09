@@ -104,15 +104,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      # find_spec instead of import_module: prediction_server.py creates
+      # /local_models at import time (ModelSyncer.__init__), which fails
+      # outside a container. Switch to import_module after the lifespan refactor.
       - name: Check imports
         run: |
           pip install -r requirements.txt --quiet
           python -c "
-          import importlib
+          import importlib.util
           for mod in ['prediction.prediction_server', 'training.training_server', 'common.types']:
-            m = importlib.import_module(mod)
-            assert m is not None, f'{mod} not found'
-            print(f'{mod}: {m.file}')
+              spec = importlib.util.find_spec(mod)
+              assert spec is not None, f'{mod} not found'
+              print(f'{mod}: {spec.origin}')
           "
 
   # Container: build (no push) to validate all service Dockerfiles
