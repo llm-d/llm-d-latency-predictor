@@ -12,8 +12,14 @@ COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source
+COPY VERSION ./
 COPY common ./common
 COPY prediction ./prediction
+
+# Pre-create the default model cache directory so the process can write to it
+# when running as an arbitrary non-root UID (e.g. OpenShift restricted-v2 SCC).
+RUN mkdir -p /local_models && chmod 777 /local_models
+
 
 EXPOSE 8001
 

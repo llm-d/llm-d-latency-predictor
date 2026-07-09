@@ -12,8 +12,13 @@ COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source
+COPY VERSION ./
 COPY common ./common
 COPY training ./training
+
+# Pre-create the model directory so the process can write to it when running
+# as an arbitrary non-root UID (e.g. OpenShift restricted-v2 SCC).
+RUN mkdir -p /models && chmod 777 /models
 
 EXPOSE 8000
 

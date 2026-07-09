@@ -108,11 +108,11 @@ jobs:
         run: |
           pip install -r requirements.txt --quiet
           python -c "
-          import importlib.util
+          import importlib
           for mod in ['prediction.prediction_server', 'training.training_server', 'common.types']:
-              spec = importlib.util.find_spec(mod)
-              assert spec is not None, f'{mod} not found'
-              print(f'{mod}: {spec.origin}')
+            m = importlib.import_module(mod)
+            assert m is not None, f'{mod} not found'
+            print(f'{mod}: {m.file}')
           "
 
   # Container: build (no push) to validate all service Dockerfiles

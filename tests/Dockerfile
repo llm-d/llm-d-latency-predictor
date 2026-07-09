@@ -14,6 +14,7 @@ COPY tests/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy test sources
+COPY VERSION ./
 COPY tests ./tests
 
 RUN mkdir -p /test-results
