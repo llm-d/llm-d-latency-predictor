@@ -90,3 +90,51 @@ def test_no_refire_until_retrain_lands_then_resets():
     # again -- no immediate re-fire off pre-retrain history.
     assert t.update(70, 70, landed) is False  # bad=1 (fresh)
     assert t.update(70, 70, landed) is True  # bad=k -> fires again
+
+
+def test_skipped_retrain_releases_pending_and_refires():
+    # kaushikmitr's deadlock scenario on #32: the trigger fires, the training
+    # loop consumes it, but train() concludes WITHOUT landing a model (e.g.
+    # /flush emptied the buckets so samples < MIN_SAMPLES_FOR_RETRAIN).
+    # last_retrain_time never changes, so without the attempt counter the
+    # detector would wait forever and the feature silently dies.
+    t = new_trigger()
+    assert t.update(70, 70, None, train_attempts=7) is False
+    assert t.update(70, 70, None, train_attempts=7) is True  # fires at attempts=7
+    assert t.awaiting_retrain
+
+    # The triggered train() concludes (attempts advances) but skips: no model
+    # landed, last_retrain_time still None -> pending state is released.
+    assert t.update(70, 70, None, train_attempts=8) is False
+    assert not t.awaiting_retrain
+    # Drift EMA is preserved (drift is still live), only the streak restarts.
+    assert t.max_dev > 0.0
+    assert t.consecutive_bad == 0
+
+    # Detection resumes: k more consecutive bad evals re-fire, giving periodic
+    # retries until a retrain can actually land.
+    assert t.update(70, 70, None, train_attempts=8) is False  # bad=1
+    assert t.update(70, 70, None, train_attempts=8) is True  # bad=k -> re-fires
+
+
+def test_landed_retrain_still_resets_with_attempt_counter():
+    t = new_trigger()
+    t.update(70, 70, None, train_attempts=3)
+    assert t.update(70, 70, None, train_attempts=3) is True
+    # Retrain lands: attempts advanced AND last_retrain_time changed. The
+    # landed branch must win (full reset, clean slate), not the skip branch.
+    landed = datetime.datetime(2026, 1, 1)
+    assert t.update(70, 70, landed, train_attempts=4) is False
+    assert not t.awaiting_retrain
+    assert t.max_dev == 0.0 and t.consecutive_bad == 0
+
+
+def test_pending_without_attempt_signal_keeps_waiting():
+    # Callers that don't pass train_attempts keep the original semantics:
+    # wait on last_retrain_time alone.
+    t = new_trigger()
+    t.update(70, 70, None)
+    assert t.update(70, 70, None) is True
+    for _ in range(10):
+        assert t.update(70, 70, None) is False
+    assert t.awaiting_retrain

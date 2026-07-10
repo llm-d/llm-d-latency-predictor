@@ -27,6 +27,16 @@ class CalibrationTrigger:
     retrain lands (detected by a change in `last_retrain_time`), then resets its
     EMA and counter so post-retrain history starts clean. This prevents a slow
     retrain from queuing back-to-back retrains while the model is still drifted.
+
+    A triggered retrain can also conclude WITHOUT landing a model: train()
+    returns early when samples are below the minimum, when training raises, or
+    when the predictor is not ready (e.g. /flush emptied the buckets right after
+    a trigger). Waiting on `last_retrain_time` alone would then deadlock the
+    detector in the pending state. `update` therefore also accepts the
+    predictor's `train_attempts` counter; if an attempt concludes while
+    `last_retrain_time` is unchanged, the pending state is released with the
+    drift EMA preserved, so detection resumes and can re-fire after `k` more
+    consecutive bad evaluations.
     """
 
     def __init__(self, target_pct: float, threshold: float, k: int, ema_alpha: float):
@@ -38,6 +48,7 @@ class CalibrationTrigger:
         self.tpot_ema = 0.0
         self.consecutive_bad = 0
         self._pending_retrain = _UNSET
+        self._pending_attempts: int | None = None
 
     @property
     def max_dev(self) -> float:
@@ -47,8 +58,19 @@ class CalibrationTrigger:
     def awaiting_retrain(self) -> bool:
         return self._pending_retrain is not _UNSET
 
-    def update(self, ttft_cov: float | None, tpot_cov: float | None, last_retrain_time) -> bool:
-        """Fold in one coverage evaluation. Returns True if a retrain should fire now."""
+    def update(
+        self,
+        ttft_cov: float | None,
+        tpot_cov: float | None,
+        last_retrain_time,
+        train_attempts: int | None = None,
+    ) -> bool:
+        """Fold in one coverage evaluation. Returns True if a retrain should fire now.
+
+        `train_attempts` is the predictor's monotonic count of concluded train()
+        calls (landed or not). When provided, it releases the pending state if a
+        triggered retrain concluded without landing a model.
+        """
         a = self.ema_alpha
         if ttft_cov is not None:
             self.ttft_ema = (1 - a) * self.ttft_ema + a * abs(ttft_cov - self.target_pct)
@@ -60,6 +82,18 @@ class CalibrationTrigger:
         if self._pending_retrain is not _UNSET:
             if last_retrain_time != self._pending_retrain:
                 self.reset()
+            elif (
+                train_attempts is not None
+                and self._pending_attempts is not None
+                and train_attempts > self._pending_attempts
+            ):
+                # A train() call concluded without landing a model (skipped or
+                # failed), so the requested retrain is not coming. Release the
+                # pending state but keep the drift EMA: detection resumes and
+                # re-fires after k more consecutive bad evaluations.
+                self._pending_retrain = _UNSET
+                self._pending_attempts = None
+                self.consecutive_bad = 0
             return False
 
         if self.max_dev > self.threshold:
@@ -67,6 +101,7 @@ class CalibrationTrigger:
             if self.consecutive_bad >= self.k:
                 self.consecutive_bad = 0
                 self._pending_retrain = last_retrain_time
+                self._pending_attempts = train_attempts
                 return True
         else:
             self.consecutive_bad = 0
@@ -78,3 +113,4 @@ class CalibrationTrigger:
         self.tpot_ema = 0.0
         self.consecutive_bad = 0
         self._pending_retrain = _UNSET
+        self._pending_attempts = None

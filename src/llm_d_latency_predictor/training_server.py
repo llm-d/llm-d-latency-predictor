@@ -310,6 +310,13 @@ class LatencyPredictor:
         self.ttft_violation_rates = deque(maxlen=5)
         self.tpot_violation_rates = deque(maxlen=5)
 
+        # Live coverage from the continuous coverage loop: evaluations of the
+        # currently loaded model between retrains. Kept separate from the
+        # per-retrain deques above so ttft/tpot_coverage_percent retain their
+        # "test coverage at the last 5 retrains" meaning.
+        self.ttft_live_coverage_scores = deque(maxlen=5)
+        self.tpot_live_coverage_scores = deque(maxlen=5)
+
         # Mean-objective metric tracking (store last 5 scores)
         self.ttft_mae_scores = deque(maxlen=5)
         self.tpot_mae_scores = deque(maxlen=5)
@@ -340,6 +347,11 @@ class LatencyPredictor:
         # the rest of RETRAINING_INTERVAL_SEC.
         self._calibration_trigger = threading.Event()
         self._coverage_eval_thread: threading.Thread | None = None
+        # Monotonic count of concluded train() calls, landed or not. The
+        # calibration detector compares it against the value captured at
+        # trigger time to notice a triggered retrain that skipped or failed
+        # (last_retrain_time unchanged) and release its pending state.
+        self._train_attempts = 0
 
     def _get_prefix_bucket(self, prefix_score: float) -> int:
         """Map prefix cache score to bucket index."""
@@ -736,10 +748,11 @@ class LatencyPredictor:
 
     def evaluate_current_coverage(self) -> tuple[float | None, float | None]:
         """Re-evaluate coverage on the *currently loaded* model + test buffer,
-        without retraining. Appends to {ttft,tpot}_coverage_scores so /metrics
-        reflects up-to-date calibration between scheduled retrains. Returns
-        (ttft_cov, tpot_cov); either may be None if model/test data isn't ready.
-        Quantile-objective only — no-op under mean-objective.
+        without retraining. Appends to {ttft,tpot}_live_coverage_scores (its own
+        metric family, ttft/tpot_live_coverage_percent) so the per-retrain
+        coverage series keep their meaning. Returns (ttft_cov, tpot_cov); either
+        may be None if model/test data isn't ready. Quantile-objective only —
+        no-op under mean-objective.
         """
         if self.objective_type == ObjectiveType.MEAN:
             return None, None
@@ -761,14 +774,14 @@ class LatencyPredictor:
             _, cov, _ = self._calculate_metrics_on_test(ttft_model, ttft_scaler, ttft_test, "ttft", "actual_ttft_ms")
             if cov is not None:
                 with self.lock:
-                    self.ttft_coverage_scores.append(cov)
+                    self.ttft_live_coverage_scores.append(cov)
                 ttft_cov = cov
 
         if tpot_test and tpot_model is not None:
             _, cov, _ = self._calculate_metrics_on_test(tpot_model, tpot_scaler, tpot_test, "tpot", "actual_tpot_ms")
             if cov is not None:
                 with self.lock:
-                    self.tpot_coverage_scores.append(cov)
+                    self.tpot_live_coverage_scores.append(cov)
                 tpot_cov = cov
 
         return ttft_cov, tpot_cov
@@ -1189,6 +1202,12 @@ class LatencyPredictor:
                         logging.error("Error saving models after training.", exc_info=True)
         except Exception as e:
             logging.error(f"Critical error in train(): {e}", exc_info=True)
+        finally:
+            # Counted on every exit path (landed, skipped, or failed) so the
+            # calibration detector can tell a concluded-but-unlanded triggered
+            # retrain from one still in flight.
+            with self.lock:
+                self._train_attempts += 1
 
     def predict(self, features: dict) -> tuple[float, float, float, float]:
         try:
@@ -1521,6 +1540,8 @@ class LatencyPredictor:
                     self.tpot_quantile_loss_scores.clear()
                     self.ttft_coverage_scores.clear()
                     self.tpot_coverage_scores.clear()
+                    self.ttft_live_coverage_scores.clear()
+                    self.tpot_live_coverage_scores.clear()
                     self.ttft_violation_rates.clear()
                     self.tpot_violation_rates.clear()
                     self.ttft_mae_scores.clear()
@@ -1799,6 +1820,15 @@ class LatencyPredictor:
                 for idx, coverage in enumerate(self.tpot_coverage_scores):
                     lines.append(f'tpot_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
 
+                # 5b) Live coverage from the continuous coverage loop
+                #     (evaluations of the current model between retrains).
+                #     Separate family so the per-retrain series above stay
+                #     comparable across enabled/disabled runs.
+                for idx, coverage in enumerate(self.ttft_live_coverage_scores):
+                    lines.append(f'ttft_live_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
+                for idx, coverage in enumerate(self.tpot_live_coverage_scores):
+                    lines.append(f'tpot_live_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
+
                 # 6) Violation rates (should be close to (1-quantile) * 100)
                 for idx, violation_rate in enumerate(self.ttft_violation_rates):
                     lines.append(f'ttft_violation_rate_percent{{idx="{idx}"}} {violation_rate:.6f}')
@@ -1937,7 +1967,12 @@ def continuous_coverage_loop():
     while not predictor._shutdown_event.is_set():
         try:
             ttft_cov, tpot_cov = predictor.evaluate_current_coverage()
-            fired = trigger.update(ttft_cov, tpot_cov, predictor.last_retrain_time)
+            fired = trigger.update(
+                ttft_cov,
+                tpot_cov,
+                predictor.last_retrain_time,
+                train_attempts=predictor._train_attempts,
+            )
             logging.info(
                 f"Coverage drift: ttft_cov={ttft_cov} tpot_cov={tpot_cov} "
                 f"max_dev={trigger.max_dev:.2f} consecutive_bad={trigger.consecutive_bad}/{settings.CALIBRATION_TRIGGER_K}"
