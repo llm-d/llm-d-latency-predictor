@@ -28,8 +28,70 @@ jobs:
               - '!LICENSE'
               - '!OWNERS'
 
-  # Python: lint
-  python-lint:
+  # Lint: runs all pre-commit hooks (ruff, shellcheck, hadolint, markdownlint, yamllint, etc.)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
+
+  # Require VERSION bump when code changes
+  version-check:
+    runs-on: ubuntu-latest
+    needs: check-code-changes
+    if: needs.check-code-changes.outputs.has_code_changes == 'true'
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check VERSION was bumped
+        run: |
+          changed=$(git diff --name-only origin/main...HEAD \
+            | grep -E '^(common|prediction|training)/' \
+            | grep -vE 'requirements\.(in|txt)$' \
+            | grep -v 'Dockerfile$' || true)
+
+          if [ -z "$changed" ]; then
+            echo "No source changes in common/, prediction/, or training/. Skipping version check."
+            exit 0
+          fi
+
+          echo "Source files changed:"
+          echo "$changed"
+
+          if ! git diff --name-only origin/main...HEAD | grep -q '^VERSION$'; then
+            echo "::error::Source changes detected but VERSION was not bumped. Please update the VERSION file."
+            exit 1
+          fi
+
+          new_version=$(cat VERSION)
+          old_version=$(git show origin/main:VERSION 2>/dev/null || echo "0.0.0")
+
+          if [ "$new_version" = "$old_version" ]; then
+            echo "::error::VERSION file was modified but the version ($new_version) is the same as main."
+            exit 1
+          fi
+
+          highest=$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -n1)
+          if [ "$highest" != "$new_version" ]; then
+            echo "::error::VERSION ($new_version) is not greater than main ($old_version)."
+            exit 1
+          fi
+
+          echo "VERSION bumped: $old_version -> $new_version"
+
+  # Verify the restructured layout is importable
+  import-check:
     runs-on: ubuntu-latest
     needs: check-code-changes
     if: needs.check-code-changes.outputs.has_code_changes == 'true'
@@ -42,14 +104,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Run ruff check
-        run: ruff check .
-
-      - name: Run ruff format check
-        run: ruff format --check .
+      # find_spec instead of import_module: prediction_server.py creates
+      # /local_models at import time (ModelSyncer.__init__), which fails
+      # outside a container. Switch to import_module after the lifespan refactor.
+      - name: Check imports
+        run: |
+          pip install -r requirements.txt --quiet
+          python -c "
+          import importlib.util
+          for mod in ['prediction.prediction_server', 'training.training_server', 'common.types']:
+              spec = importlib.util.find_spec(mod)
+              assert spec is not None, f'{mod} not found'
+              print(f'{mod}: {spec.origin}')
+          "
 
   # Container: build (no push) to validate all service Dockerfiles
   container-build:
@@ -60,11 +127,11 @@ jobs:
       matrix:
         service:
           - name: prediction
-            dockerfile: Dockerfile-prediction
+            dockerfile: prediction/Dockerfile
           - name: training
-            dockerfile: Dockerfile-training
+            dockerfile: training/Dockerfile
           - name: test
-            dockerfile: Dockerfile-test
+            dockerfile: tests/Dockerfile
     steps:
       - name: Checkout source
         uses: actions/checkout@v6

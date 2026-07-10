@@ -1,4 +1,5 @@
-FROM python:3.14-slim
+# 3.11: xgboost/numpy wheels lag on newer Python; EOL Oct 2027
+FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \
     curl \
@@ -8,17 +9,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install runtime + test dependencies
-COPY requirements.txt .
+# Install test dependencies (includes main + test extras)
+COPY tests/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    requests \
-    httpx \
-    aiohttp
 
 # Copy test sources
+COPY VERSION ./
 COPY tests ./tests
 
 RUN mkdir -p /test-results

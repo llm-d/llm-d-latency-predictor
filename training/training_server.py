@@ -14,12 +14,10 @@
 import json
 import logging
 import os  # Added this import
-import random
 import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
-from enum import StrEnum
 
 import joblib
 import numpy as np
@@ -48,44 +46,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
     logging.warning("LightGBM not available. Please install with: pip install lightgbm")
 
-
-class ModelType(StrEnum):
-    BAYESIAN_RIDGE = "bayesian_ridge"
-    XGBOOST = "xgboost"
-    LIGHTGBM = "lightgbm"
-
-
-class ObjectiveType(StrEnum):
-    QUANTILE = "quantile"
-    MEAN = "mean"
-
-
-class RandomDropDeque(deque):
-    def __init__(self, maxlen):
-        super().__init__()
-        self._maxlen = maxlen
-
-    def append(self, item):
-        if len(self) >= self._maxlen:
-            # pick a random index to evict
-            idx = random.randrange(len(self))
-            # rotate so that element at idx moves to the left end
-            self.rotate(-idx)
-            # remove it
-            self.popleft()
-            # rotate back to original ordering
-            self.rotate(idx)
-        super().append(item)
-
-    def appendleft(self, item):
-        if len(self) >= self._maxlen:
-            idx = random.randrange(len(self))
-            # rotate so that element at idx moves to the right end
-            self.rotate(len(self) - idx - 1)
-            self.pop()
-            # rotate back
-            self.rotate(-(len(self) - idx - 1))
-        super().appendleft(item)
+from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque
 
 
 # --- Configuration ---
@@ -121,20 +82,6 @@ class Settings:
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     TTFT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TTFT_GATED_MODEL_PATH", "/tmp/models/ttft_gated.joblib")
     TPOT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TPOT_GATED_MODEL_PATH", "/tmp/models/tpot_gated.joblib")
-
-
-class QueueGatedModel:
-    """Wraps noqueue + queued sub-models into one joblib-serializable object.
-
-    At prediction time the caller checks num_request_waiting and picks the
-    appropriate sub-model + scaler from inside this wrapper.
-    """
-
-    def __init__(self, noqueue_model, queued_model, noqueue_scaler=None, queued_scaler=None):
-        self.noqueue_model = noqueue_model
-        self.queued_model = queued_model
-        self.noqueue_scaler = noqueue_scaler
-        self.queued_scaler = queued_scaler
 
 
 settings = Settings()
