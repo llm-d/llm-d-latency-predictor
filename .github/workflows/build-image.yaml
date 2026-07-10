@@ -28,7 +28,7 @@ jobs:
             dockerfile: Dockerfile-test
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set image metadata
         id: meta
