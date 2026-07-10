@@ -25,7 +25,7 @@ jobs:
             dockerfile: tests/Dockerfile
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set project name from repository
         id: meta
