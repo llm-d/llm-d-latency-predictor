@@ -117,13 +117,3 @@ jobs:
               assert spec is not None, f'{mod} not found'
               print(f'{mod}: {spec.origin}')
           "
-
-  # Container: build and push via the reusable build-image workflow
-  container-build:
-    needs: check-code-changes
-    if: needs.check-code-changes.outputs.has_code_changes == 'true'
-    uses: ./.github/workflows/build-image.yaml
-    permissions:
-      contents: read
-      packages: write
-    secrets: inherit
