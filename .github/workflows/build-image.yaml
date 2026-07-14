@@ -11,6 +11,10 @@ on:
         description: "Build all images regardless of change detection"
         type: boolean
         default: false
+      image_suffix:
+        description: "Suffix appended to image names (e.g. '-dev' for PR builds)"
+        type: string
+        default: ""
     outputs:
       prediction_image:
         description: "Full image ref for the prediction server"
@@ -116,7 +120,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_BASE }}-prediction-server
+          images: ${{ env.IMAGE_BASE }}-prediction-server${{ inputs.image_suffix }}
           tags: |
             type=ref,event=pr
             type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
@@ -178,7 +182,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_BASE }}-training-server
+          images: ${{ env.IMAGE_BASE }}-training-server${{ inputs.image_suffix }}
           tags: |
             type=ref,event=pr
             type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
@@ -240,7 +244,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_BASE }}-test
+          images: ${{ env.IMAGE_BASE }}-test${{ inputs.image_suffix }}
           tags: |
             type=ref,event=pr
             type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}

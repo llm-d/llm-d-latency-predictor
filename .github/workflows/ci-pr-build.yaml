@@ -41,6 +41,7 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
+      image_suffix: "-dev"
     permissions:
       contents: read
       packages: write
