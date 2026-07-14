@@ -116,7 +116,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_BASE }}-prediction
+          images: ${{ env.IMAGE_BASE }}-prediction-server
           tags: |
             type=ref,event=pr
             type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
@@ -178,7 +178,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE_BASE }}-training
+          images: ${{ env.IMAGE_BASE }}-training-server
           tags: |
             type=ref,event=pr
             type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
