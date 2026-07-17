@@ -1,0 +1,9 @@
+# Fall back to the cluster's default StorageClass for the models PVC.
+# To set as null, it selects the default StorageClass from OCP cluster
+# To set "", would disable dynamic provisioning entirely.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: training-models-pvc
+spec:
+  storageClassName: null
