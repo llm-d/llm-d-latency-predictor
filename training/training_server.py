@@ -395,6 +395,11 @@ class LatencyPredictor:
             tif_cols = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
 
         if model_type == "ttft":
+            # Encoder columns (multimodal): populate if present, else zero-fill for safety
+            for col in ("encoder_matched_size", "encoder_input_size"):
+                if col not in df.columns:
+                    df[col] = 0
+
             # Create interaction: prefix score * input length
             # This captures that prefix caching benefit scales with input size
             df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * (df["input_token_length"])
@@ -412,6 +417,7 @@ class LatencyPredictor:
             feature_cols = (
                 ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + tif_cols
+                + ["encoder_matched_size", "encoder_input_size"]
                 + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
             )
             return df[feature_cols]
@@ -498,10 +504,12 @@ class LatencyPredictor:
                         if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES
                         else []
                     )
+                    _enc = ["encoder_matched_size", "encoder_input_size"]
                     if drop_queue_features:
                         ttft_order = (
                             ["kv_cache_percentage", "input_token_length", "num_request_running"]
                             + _tif
+                            + _enc
                             + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
                         )
                     else:
@@ -514,6 +522,7 @@ class LatencyPredictor:
                                 "num_request_running",
                             ]
                             + _tif
+                            + _enc
                             + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
                         )
                     if list(features.columns) != ttft_order:
@@ -683,6 +692,7 @@ class LatencyPredictor:
                 else []
             )
             if model_name == "ttft":
+                _enc = ["encoder_matched_size", "encoder_input_size"]
                 if self.model_type == ModelType.BAYESIAN_RIDGE:
                     feature_cols = (
                         [
@@ -693,6 +703,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
+                        + _enc
                         + ["prefix_cache_score", "effective_input_tokens", "pod_type_cat"]
                     )
                 else:
@@ -705,6 +716,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
+                        + _enc
                         + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
                     )
             else:
@@ -765,6 +777,8 @@ class LatencyPredictor:
                         "num_request_running": [0],
                         "prefill_tokens_in_flight": [0],
                         "decode_tokens_in_flight": [0],
+                        "encoder_matched_size": [0],
+                        "encoder_input_size": [0],
                         "prefix_cache_score": [0.0],
                     }
                 )
@@ -819,6 +833,7 @@ class LatencyPredictor:
                         if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES
                         else []
                     )
+                    _enc = ["encoder_matched_size", "encoder_input_size"]
                     ttft_feature_cols_tree = (
                         [
                             "is_queued",
@@ -828,6 +843,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
+                        + _enc
                         + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
                     )
                     ttft_feature_cols_br = (
@@ -839,6 +855,7 @@ class LatencyPredictor:
                             "num_request_running",
                         ]
                         + _tif
+                        + _enc
                         + ["prefix_cache_score", "effective_input_tokens"]
                     )
 
@@ -1098,6 +1115,8 @@ class LatencyPredictor:
                         raise ValueError(f"Invalid type for feature {f}: expected number")
                 features.setdefault("prefill_tokens_in_flight", 0)
                 features.setdefault("decode_tokens_in_flight", 0)
+                features.setdefault("encoder_matched_size", 0)
+                features.setdefault("encoder_input_size", 0)
 
                 ttft_cols = [
                     "kv_cache_percentage",
@@ -1106,6 +1125,8 @@ class LatencyPredictor:
                     "num_request_running",
                     "prefill_tokens_in_flight",
                     "decode_tokens_in_flight",
+                    "encoder_matched_size",
+                    "encoder_input_size",
                     "prefix_cache_score",
                 ]
                 tpot_cols = [
@@ -1270,15 +1291,7 @@ class LatencyPredictor:
                         self.ttft_model.booster_.save_model(ttft_txt_path)
 
                         # Save feature importances as JSON
-                        feature_names = [
-                            "kv_cache_percentage",
-                            "input_token_length",
-                            "num_request_waiting",
-                            "num_request_running",
-                            "prefix_cache_score",
-                            "effective_input_tokens",
-                            "prefill_score_bucket",
-                        ]
+                        feature_names = self.ttft_model.booster_.feature_name()
                         importances = dict(zip(feature_names, self.ttft_model.feature_importances_))
 
                         ttft_imp_path = settings.TTFT_MODEL_PATH.replace(".joblib", "_importances.json")
@@ -1321,13 +1334,7 @@ class LatencyPredictor:
                         self.tpot_model.booster_.save_model(tpot_txt_path)
 
                         # Save feature importances as JSON
-                        feature_names = [
-                            "kv_cache_percentage",
-                            "input_token_length",
-                            "num_request_waiting",
-                            "num_request_running",
-                            "num_tokens_generated",
-                        ]
+                        feature_names = self.tpot_model.booster_.feature_name()
                         importances = dict(zip(feature_names, self.tpot_model.feature_importances_))
 
                         tpot_imp_path = settings.TPOT_MODEL_PATH.replace(".joblib", "_importances.json")
@@ -1522,6 +1529,8 @@ class LatencyPredictor:
                     "num_request_running",
                     "prefill_tokens_in_flight",
                     "decode_tokens_in_flight",
+                    "encoder_matched_size",
+                    "encoder_input_size",
                     "prefix_cache_score",
                     "effective_input_tokens",
                 ]
@@ -1544,6 +1553,8 @@ class LatencyPredictor:
                     "num_request_running",
                     "prefill_tokens_in_flight",
                     "decode_tokens_in_flight",
+                    "encoder_matched_size",
+                    "encoder_input_size",
                     "prefix_cache_score",
                     "effective_input_tokens",
                     "prefill_score_bucket",
@@ -1728,6 +1739,8 @@ class TrainingEntry(BaseModel):
     pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
     prefill_tokens_in_flight: int = Field(default=0, ge=0)
     decode_tokens_in_flight: int = Field(default=0, ge=0)
+    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
+    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -1739,6 +1752,8 @@ class PredictionRequest(BaseModel):
     num_tokens_generated: int = Field(..., ge=0)
     prefix_cache_score: float = Field(..., ge=0.0, le=1.0, description="Prefix cache hit ratio score (0.0 to 1.0)")
     pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
+    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
+    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
 
 
 class PredictionResponse(BaseModel):
