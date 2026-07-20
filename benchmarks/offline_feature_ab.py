@@ -31,7 +31,7 @@ Outputs (to --outdir):
 
 Usage:
   python benchmarks/offline_feature_ab.py --trace trace.jsonl \\
-      --feature prefill_density --seeds 10 --outdir results/ab
+      --feature <feature_name> --seeds 10 --outdir results/ab
 """
 
 from __future__ import annotations
@@ -403,7 +403,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--trace", type=Path, required=True)
-    p.add_argument("--feature", default="prefill_density")
+    p.add_argument("--feature", required=True, help="feature column name to A/B test")
     p.add_argument("--seeds", type=int, default=10)
     p.add_argument("--min-contention-pct", type=float, default=20.0)
     p.add_argument("--outdir", type=Path, default=Path("results/ab"))

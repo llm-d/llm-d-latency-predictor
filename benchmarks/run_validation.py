@@ -7,10 +7,10 @@ Wraps offline_feature_ab.py functions — no subprocess, direct import.
 Usage:
   python benchmarks/run_validation.py \\
       --trace trace.jsonl \\
-      --feature prefill_density \\
+      --feature <feature_name> \\
       --seeds 10 \\
       --workload-spec benchmarks/workload-spec.yaml \\
-      --outdir results/prefill_density \\
+      --outdir results/<feature_name> \\
       --shap --json
 
 Exit codes:
@@ -48,8 +48,8 @@ def main() -> int:
     )
     p.add_argument("--trace", type=Path, required=True,
                    help="JSONL trace from trace_recorder.py")
-    p.add_argument("--feature", default="prefill_density",
-                   help="feature to A/B test (default: prefill_density)")
+    p.add_argument("--feature", required=True,
+                   help="feature column name to A/B test")
     p.add_argument("--seeds", type=int, default=10)
     p.add_argument("--min-contention-pct", type=float, default=20.0)
     p.add_argument("--model-type", choices=list(ESTIMATORS.keys()), default="xgboost")

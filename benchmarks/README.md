@@ -6,9 +6,9 @@ before/after evidence on a named workload, so real signal is distinguishable
 from noise and regressions on the untouched target are caught.
 
 > [!NOTE]
-> Origin: [PR #31 review](https://github.com/llm-d/llm-d-latency-predictor/pull/31)
-> — "every new engineered feature should come with the same actual-vs-predicted
-> evidence on a named workload."
+> Every engineered feature PR (addition or removal) should ship the same
+> actual-vs-predicted evidence on a named workload, so real signal is
+> distinguishable from noise and regressions on the untouched target are caught.
 
 ## The evidence standard
 
@@ -37,21 +37,21 @@ pip install -r benchmarks/requirements.txt
 # Run the full validation pipeline
 python benchmarks/run_validation.py \
     --trace trace.jsonl \
-    --feature prefill_density \
+    --feature <feature_name> \
     --seeds 10 \
     --workload-spec benchmarks/workload-spec.yaml \
-    --outdir results/prefill_density \
+    --outdir results/<feature_name> \
     --shap --json
 ```
 
 ## Workflow
 
 ```text
-[1] deploy stack          llm-d-benchmark predicted-latency-routing scenario
-        |                 (EPP + predictor + vLLM on GPU)
+[1] deploy stack          EPP + latency predictor + vLLM on GPU
+        |
 [2] insert recorder       trace_recorder.py between EPP and training server
         |                 (TRAINING_SERVER_URL -> recorder -> training server)
-[3] generate load         inference-perf with sustained concurrency
+[3] generate load         any load generator with sustained concurrency
         |                 (verify num_request_running > 1 in the trace!)
 [4] collect trace         JSONL of real training entries (features + actuals)
 [5] offline A/B           run_validation.py --trace ... --feature <name>
@@ -61,7 +61,7 @@ python benchmarks/run_validation.py \
 
 ### Step 1-2: deploy with the recorder
 
-Deploy the stack (see [llm-d-benchmark predicted-latency-routing guide scenario](https://github.com/llm-d/llm-d-benchmark/blob/main/config/scenarios/guides/predicted-latency-routing.yaml)),
+Deploy the llm-d stack (EPP + latency predictor + vLLM),
 then run the recorder next to the training server and point the EPP at it:
 
 ```bash
@@ -92,7 +92,7 @@ print(sorted(c.items()))"
 
 ```bash
 python benchmarks/run_validation.py \
-    --trace trace.jsonl --feature prefill_density --seeds 10 \
+    --trace trace.jsonl --feature <feature_name> --seeds 10 \
     --workload-spec benchmarks/workload-spec.yaml \
     --outdir results/ab --shap --json
 ```
@@ -105,7 +105,7 @@ Exit code 0 means all gates passed; exit code 1 means a gate failed.
 | Flag | Default | Description |
 |---|---|---|
 | `--trace` | (required) | Path to JSONL trace from trace_recorder.py |
-| `--feature` | `prefill_density` | Feature to A/B test |
+| `--feature` | (required) | Feature column name to A/B test |
 | `--seeds` | `10` | Number of random train/test splits |
 | `--min-contention-pct` | `20.0` | Minimum % samples with `num_request_running > 1` |
 | `--model-type` | `xgboost` | Estimator: `xgboost` or `lightgbm` |
@@ -155,7 +155,7 @@ guarantees from Shapley game theory (Lundberg & Lee, NeurIPS 2017).
 See `ci/feature-ab.yaml` for a draft GitHub Actions workflow. The key insight:
 **GPU is needed only for trace capture, not for offline A/B analysis.** Once a
 baseline trace is captured and committed, the CI workflow runs the A/B on CPU
-in seconds. This fits Greg's CI/CD Testing Automation milestone (#15).
+in seconds, making it suitable for CI gating.
 
 ## Files
 

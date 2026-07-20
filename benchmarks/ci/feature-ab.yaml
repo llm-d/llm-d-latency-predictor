@@ -1,13 +1,8 @@
-# DRAFT — Proposal for v0.9.0 CI/CD Testing Automation milestone (#15)
-#
-# Offline A/B validation for latency predictor feature PRs.
+# DRAFT — Offline A/B validation for latency predictor feature PRs.
 # Runs on CPU using a frozen baseline trace — no GPU runner needed.
 #
 # To enable: move this file to .github/workflows/ and add as a required check.
 # Requires a baseline trace committed at benchmarks/traces/baseline.jsonl.
-#
-# Context: https://github.com/llm-d/llm-d-latency-predictor/issues/15
-# Contact: Greg Pereira (Gregory-Pereira) — CI epic owner
 
 name: "Feature A/B Validation (draft)"
 
@@ -36,7 +31,7 @@ jobs:
         run: |
           python benchmarks/run_validation.py \
             --trace benchmarks/traces/baseline.jsonl \
-            --feature prefill_density \
+            --feature ${FEATURE:-prefill_density} \
             --seeds 5 \
             --json \
             --outdir /tmp/ab-results
