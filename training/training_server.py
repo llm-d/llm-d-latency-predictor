@@ -34,17 +34,18 @@ try:
     import xgboost as xgb
 
     XGBOOST_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
     XGBOOST_AVAILABLE = False
-    logging.warning("XGBoost not available. Please install with: pip install xgboost")
+    logging.warning("XGBoost not available: %s. Please install with: pip install xgboost", e)
 
 try:
     import lightgbm as lgb
 
     LIGHTGBM_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
     LIGHTGBM_AVAILABLE = False
-    logging.warning("LightGBM not available. Please install with: pip install lightgbm")
+    lgb = None
+    logging.warning("LightGBM not available: %s. Please install with: pip install lightgbm", e)
 
 from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque
 
@@ -669,7 +670,13 @@ class LatencyPredictor:
         Returns (None, None, None) on failure.
         """
         try:
-            df_raw = pd.DataFrame(test_data).dropna()
+            clean_metrics = []
+            for row in test_data:
+                r = row.copy()
+                r.pop("timestamp", None)
+                clean_metrics.append(r)
+            df_raw = pd.DataFrame(clean_metrics)
+            df_raw = df_raw.dropna()
             df_raw = df_raw[df_raw[target_col] > 0]
 
             if len(df_raw) < 2:
@@ -808,7 +815,13 @@ class LatencyPredictor:
 
             # Train TTFT
             if ttft_snap:
-                raw_ttft = pd.DataFrame(ttft_snap).dropna()
+                clean_ttft = []
+                for row in ttft_snap:
+                    r = row.copy()
+                    r.pop("timestamp", None)
+                    clean_ttft.append(r)
+                raw_ttft = pd.DataFrame(clean_ttft)
+                raw_ttft = raw_ttft.dropna()
                 raw_ttft = raw_ttft[raw_ttft["actual_ttft_ms"] > 0]
                 df_ttft = self._prepare_features_with_interaction(raw_ttft.copy(), model_type="ttft")
                 print(f"TTFT training data size: {len(df_ttft)} with sample data: {df_ttft.columns.tolist()}")
@@ -913,7 +926,13 @@ class LatencyPredictor:
 
             # Train TPOT
             if tpot_snap:
-                df_tpot = pd.DataFrame(tpot_snap).dropna()
+                clean_tpot = []
+                for row in tpot_snap:
+                    r = row.copy()
+                    r.pop("timestamp", None)
+                    clean_tpot.append(r)
+                df_tpot = pd.DataFrame(clean_tpot)
+                df_tpot = df_tpot.dropna()
                 df_tpot = df_tpot[df_tpot["actual_tpot_ms"] > 0]
                 if settings.TPOT_ZERO_TOKEN_COUNT:
                     df_tpot["num_tokens_generated"] = 0
@@ -990,7 +1009,11 @@ class LatencyPredictor:
                             ("tpot_queued", tpot_queued, "tpot", "actual_tpot_ms", "queued"),
                         ]:
                             try:
-                                raw = pd.DataFrame(samples).dropna()
+                                clean = [
+                                    {k: v for k, v in row.items() if k != "timestamp"}
+                                    for row in samples
+                                ]
+                                raw = pd.DataFrame(clean).dropna()
                                 raw = raw[raw[target_col] > 0]
                                 X = self._prepare_features_for_ensemble(raw.copy(), model_name, regime)
                                 y = raw[target_col]
