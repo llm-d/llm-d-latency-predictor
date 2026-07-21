@@ -1,11 +1,25 @@
 # 3.11: xgboost/numpy wheels lag on newer Python; EOL Oct 2027
 FROM python:3.11-slim
 
+ARG TARGETARCH
+
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
-    jq \
-    && rm -rf /var/lib/apt/lists/*
+    jq &&\
+    if [ "${TARGETARCH}" = "s390x" ]; then \
+        apt-get install -y \
+            build-essential \
+            gcc \
+            g++ \
+            gfortran \
+            pkg-config \
+            cmake \
+            ninja-build \
+            libopenblas-dev \
+            liblapack-dev; \
+    fi && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
