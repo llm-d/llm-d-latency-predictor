@@ -1,12 +1,12 @@
 # Feature Validation Benchmark Template
 
 A repeatable evidence standard for latency-predictor feature changes.
-Every engineered feature PR (addition **or** removal) should ship the same
+Every engineered feature PR adding a new feature should ship the same
 before/after evidence on a named workload, so real signal is distinguishable
 from noise and regressions on the untouched target are caught.
 
 > [!NOTE]
-> Every engineered feature PR (addition or removal) should ship the same
+> Every engineered feature PR adding a new feature should ship the same
 > actual-vs-predicted evidence on a named workload, so real signal is
 > distinguishable from noise and regressions on the untouched target are caught.
 
@@ -34,14 +34,25 @@ A feature change is validated when the PR includes:
 # Install dependencies
 pip install -r benchmarks/requirements.txt
 
-# Run with the included reference trace
+# Run with an included reference trace (3 available — see benchmarks/traces/)
 python benchmarks/run_validation.py \
     --trace benchmarks/traces/sharegpt-h200.jsonl \
     --feature <feature_name> \
     --seeds 10 \
     --workload-spec benchmarks/traces/sharegpt-h200-spec.yaml \
     --outdir results/<feature_name> \
-    --shap --json
+    --shap --convergence --json
+
+# Or try long-context / extreme-contention traces
+python benchmarks/run_validation.py \
+    --trace benchmarks/traces/chatbot-synthetic-h200.jsonl \
+    --feature <feature_name> --seeds 10 --json
+
+# Or combine traces for broader coverage
+cat benchmarks/traces/*.jsonl > /tmp/combined.jsonl
+python benchmarks/run_validation.py \
+    --trace /tmp/combined.jsonl \
+    --feature <feature_name> --seeds 10 --json
 
 # Or bring your own trace
 python benchmarks/run_validation.py \
@@ -100,7 +111,7 @@ print(sorted(c.items()))"
 ```bash
 python benchmarks/run_validation.py \
     --trace trace.jsonl --feature <feature_name> --seeds 10 \
-    --workload-spec benchmarks/workload-spec.yaml \
+    --workload-spec benchmarks/traces/sharegpt-h200-spec.yaml \
     --outdir results/ab --shap --json
 ```
 
@@ -171,6 +182,7 @@ in seconds, making it suitable for CI gating.
 | `offline_feature_ab.py` | contention gate + self-test + N-seed A/B + calibration + reliability + SHAP |
 | `run_validation.py` | single-command runner wrapping offline_feature_ab |
 | `trace_recorder.py` | recording proxy: captures real EPP training entries to JSONL |
-| `workload-spec.yaml` | named workload template (model, hardware, load profile) |
+| `workload-spec.yaml` | blank template for documenting new trace captures |
+| `traces/*-spec.yaml` | filled workload specs per trace |
 | `requirements.txt` | analysis dependencies |
 | `ci/feature-ab.yaml` | draft GitHub Actions workflow (proposal for #15) |

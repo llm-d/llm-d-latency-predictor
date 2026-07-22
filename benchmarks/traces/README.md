@@ -45,6 +45,27 @@ Optional fields (zero-filled when absent):
 | `num_tokens_generated` | int | Output tokens generated so far |
 | `pod_type` | str | `"prefill"`, `"decode"`, or `""` (monolithic) |
 
+## When to capture a new trace
+
+Three reference traces are included, covering different workload patterns:
+
+| Trace | Prompt length | Contention | Samples | Covers |
+|-------|--------------|------------|---------|--------|
+| `sharegpt-h200` | short (median 165) | moderate (median 12) | 3,600 | Real conversations, moderate load |
+| `chatbot-synthetic-h200` | long (median 6,497) | extreme (median 93) | 3,060 | Long prompts, stress testing |
+| `bimodal-h200` | mixed (median 3,411) | extreme (median 116) | 6,240 | Mixed short+long, stress testing |
+
+Capture a new trace when testing features that depend on:
+
+- **Prefix cache hits** — all three traces have prefix caching disabled
+- **Multimodal inputs** — needs encoder features from a vision model deployment
+- **Output-length variation** — all traces have zero `num_tokens_generated`
+
+To combine traces: `cat traces/a.jsonl traces/b.jsonl > combined.jsonl`
+
+The trace profile table in `summary.md` shows exactly which dimensions your
+trace covers and which are degenerate.
+
 ## Naming convention
 
 `<workload>-<gpu>.jsonl` with a companion `<workload>-<gpu>-spec.yaml`.

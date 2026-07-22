@@ -28,7 +28,7 @@ import os
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FORWARD_URL = os.getenv("FORWARD_URL", "http://localhost:8000").rstrip("/")
@@ -37,8 +37,16 @@ PORT = int(os.getenv("PORT", "8002"))
 
 # hop-by-hop headers must not be forwarded (RFC 7230 §6.1)
 _HOP_BY_HOP = {
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -53,7 +61,7 @@ def _record_entries(payload: bytes) -> None:
     except (json.JSONDecodeError, AttributeError):
         logging.warning("Unparseable bulk payload (%d bytes) — forwarded but not recorded", len(payload))
         return
-    received_at = datetime.now(timezone.utc).isoformat()
+    received_at = datetime.now(UTC).isoformat()
     with _lock:
         with open(TRACE_FILE, "a") as f:
             for entry in entries:
