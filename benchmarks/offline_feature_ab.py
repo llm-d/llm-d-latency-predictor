@@ -95,6 +95,8 @@ ESTIMATORS = {"xgboost": _xgb_factory, "lightgbm": _lgbm_factory}
 
 def load_trace(path: Path) -> pd.DataFrame:
     rows = [json.loads(line) for line in path.open() if line.strip()]
+    if not rows:
+        sys.exit(f"Trace file is empty: {path}")
     df = pd.DataFrame(rows)
     required = {
         "kv_cache_percentage", "input_token_length", "num_request_waiting",
@@ -104,13 +106,22 @@ def load_trace(path: Path) -> pd.DataFrame:
     missing = required - set(df.columns)
     if missing:
         sys.exit(f"Trace missing required fields: {missing}")
+    for col in required:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            sys.exit(f"Field '{col}' must be numeric, got {df[col].dtype}")
+    if len(df) < 100:
+        print(f"WARNING: trace has only {len(df)} samples (recommend >= 1000 for stable results)", file=sys.stderr)
     return df
 
 
-def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+# Derived features not yet in production. Add one line per candidate.
+# Features already in the trace (e.g. encoder_matched_size) need no entry here.
+CANDIDATE_FORMULAS = {}
+
+
+def add_derived_features(df: pd.DataFrame, feature: str | None = None) -> pd.DataFrame:
     df = df.copy()
     df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * df["input_token_length"]
-    df["prefill_density"] = df["num_request_running"] / df["input_token_length"].clip(lower=1)
     df["prefill_score_bucket"] = pd.Categorical(
         (df["prefix_cache_score"].clip(0, 1) * PREFIX_BUCKETS).astype(int).clip(upper=PREFIX_BUCKETS - 1),
         categories=list(range(PREFIX_BUCKETS)), ordered=True,
@@ -125,6 +136,8 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in CONDITIONAL_FEATURES + ENCODER_FEATURES:
         if col not in df.columns:
             df[col] = 0
+    if feature and feature not in df.columns and feature in CANDIDATE_FORMULAS:
+        df[feature] = CANDIDATE_FORMULAS[feature](df)
     return df
 
 
@@ -254,7 +267,10 @@ def self_test(df: pd.DataFrame, feature: str, model_factory,
 def train_eval(X_train, y_train, X_test, y_test, seed: int,
                model_factory=None) -> dict:
     model = (model_factory or _xgb_factory)(seed)
-    model.fit(X_train, y_train)
+    fit_kwargs = {}
+    if hasattr(model, 'boosting_type') and "prefill_score_bucket" in X_train.columns:
+        fit_kwargs["categorical_feature"] = ["prefill_score_bucket"]
+    model.fit(X_train, y_train, **fit_kwargs)
     preds = np.asarray(model.predict(X_test), dtype=float)
     y = np.asarray(y_test, dtype=float)
     err = y - preds
@@ -267,6 +283,28 @@ def train_eval(X_train, y_train, X_test, y_test, seed: int,
         "predicted": preds.tolist(),
         "model": model,
     }
+
+
+def convergence_curve(df: pd.DataFrame, feature: str, model_factory=None,
+                      slices: tuple = (500, 1000, 2000, 4000)) -> list[dict]:
+    """Train on increasing sample counts to show how the feature's delta evolves."""
+    feats_without, feats_with = _resolve_ttft_features(df, feature)
+    curve = []
+    for n in slices:
+        if n > len(df):
+            break
+        sub = df.iloc[:n]
+        test = sub.sample(frac=0.1, random_state=0)
+        train = sub.drop(test.index)
+        r_wo = train_eval(train[feats_without], train["actual_ttft_ms"],
+                          test[feats_without], test["actual_ttft_ms"], 0, model_factory)
+        r_wi = train_eval(train[feats_with], train["actual_ttft_ms"],
+                          test[feats_with], test["actual_ttft_ms"], 0, model_factory)
+        delta = r_wi["quantile_loss"] - r_wo["quantile_loss"]
+        curve.append({"samples": n, "without": round(r_wo["quantile_loss"], 4),
+                      "with": round(r_wi["quantile_loss"], 4),
+                      "delta_pct": round(delta / r_wo["quantile_loss"] * 100, 2) if r_wo["quantile_loss"] else 0.0})
+    return curve
 
 
 def run_ab(df: pd.DataFrame, feature: str, seeds: int,
@@ -416,13 +454,15 @@ def main() -> None:
     p.add_argument("--workload-spec", type=Path, default=None,
                    help="YAML workload spec to embed in summary.md")
     p.add_argument("--shap", action="store_true", help="compute SHAP feature importance")
+    p.add_argument("--convergence", action="store_true",
+                   help="show how delta evolves as sample count grows (cold-start analysis)")
     p.add_argument("--json", action="store_true", dest="json_output",
                    help="print machine-readable fitness line to stdout")
     args = p.parse_args()
 
     model_factory = ESTIMATORS[args.model_type]
 
-    df = add_derived_features(load_trace(args.trace))
+    df = add_derived_features(load_trace(args.trace), feature=args.feature)
     gate = contention_gate(df, args.min_contention_pct)
     print(f"Contention gate PASSED: {gate['pct_samples_with_contention']}% of "
           f"{gate['samples']} samples have num_request_running > 1", file=sys.stderr)
@@ -466,6 +506,10 @@ def main() -> None:
     if args.shap:
         shap_ranking = shap_analysis(results, args.feature, df, args.outdir)
 
+    conv_curve = None
+    if args.convergence:
+        conv_curve = convergence_curve(df, args.feature, model_factory)
+
     # Build summary.md
     lines = [f"# Feature A/B: {args.feature} ({args.seeds} seeds, {args.model_type})", ""]
 
@@ -494,7 +538,7 @@ def main() -> None:
                 if key in load:
                     lines.append(f"| {key} | {load[key]} |")
             if "stages" in load:
-                stages_str = ", ".join(f"{s.get('rate', s.get('rate_qps'))} QPS × {s.get('duration_s', s.get('duration', '?'))}s"
+                stages_str = ", ".join(f"{s.get('rate', s.get('rate_qps'))} QPS x {s.get('duration_s', s.get('duration', '?'))}s"
                                        for s in load["stages"])
                 lines.append(f"| load_stages | {stages_str} |")
             lines.append("")
@@ -517,17 +561,26 @@ def main() -> None:
         for metric in metrics:
             s = summary[target][metric]
             lines.append(
-                f"| {target} | {metric} | {s['without_mean']} ± {s['without_std']} "
-                f"| {s['with_mean']} ± {s['with_std']} | {s['delta_pct']}% "
-                f"| {'**yes**' if s['delta_exceeds_seed_std'] else 'NO — within noise'} |")
+                f"| {target} | {metric} | {s['without_mean']} +/- {s['without_std']} "
+                f"| {s['with_mean']} +/- {s['with_std']} | {s['delta_pct']}% "
+                f"| {'**yes**' if s['delta_exceeds_seed_std'] else 'NO -- within noise'} |")
     lines.append("")
 
     if shap_ranking:
         lines.append("## SHAP Feature Importance (TTFT, with-arm)")
         lines.append("")
         for i, (name, val) in enumerate(shap_ranking.items(), 1):
-            marker = " ← candidate" if name == args.feature else ""
+            marker = " <- candidate" if name == args.feature else ""
             lines.append(f"{i}. **{name}**: {val:.1%}{marker}")
+        lines.append("")
+
+    if conv_curve:
+        lines.append("## Convergence (cold-start analysis)")
+        lines.append("")
+        lines.append("| samples | without (pinball) | with (pinball) | delta |")
+        lines.append("|---|---|---|---|")
+        for c in conv_curve:
+            lines.append(f"| {c['samples']} | {c['without']} | {c['with']} | {c['delta_pct']}% |")
         lines.append("")
 
     (args.outdir / "summary.md").write_text("\n".join(lines) + "\n")

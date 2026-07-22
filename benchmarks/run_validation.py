@@ -31,6 +31,7 @@ from offline_feature_ab import (
     add_derived_features,
     calibration_plot,
     contention_gate,
+    convergence_curve,
     load_trace,
     reliability_diagram,
     run_ab,
@@ -55,11 +56,13 @@ def main() -> int:
     p.add_argument("--workload-spec", type=Path, default=None)
     p.add_argument("--outdir", type=Path, default=Path("results/ab"))
     p.add_argument("--shap", action="store_true")
+    p.add_argument("--convergence", action="store_true",
+                   help="show how delta evolves as sample count grows")
     p.add_argument("--json", action="store_true", dest="json_output")
     args = p.parse_args()
 
     model_factory = ESTIMATORS[args.model_type]
-    df = add_derived_features(load_trace(args.trace))
+    df = add_derived_features(load_trace(args.trace), feature=args.feature)
 
     gate = contention_gate(df, args.min_contention_pct)
     print(f"Contention gate PASSED: {gate['pct_samples_with_contention']}% of "
@@ -101,6 +104,10 @@ def main() -> int:
     shap_ranking = None
     if args.shap:
         shap_ranking = shap_analysis(results, args.feature, df, args.outdir)
+
+    conv_curve = None
+    if args.convergence:
+        conv_curve = convergence_curve(df, args.feature, model_factory)
 
     lines = [f"# Feature A/B: {args.feature} ({args.seeds} seeds, {args.model_type})", ""]
 
@@ -164,6 +171,15 @@ def main() -> int:
         for i, (name, val) in enumerate(shap_ranking.items(), 1):
             marker = " <- candidate" if name == args.feature else ""
             lines.append(f"{i}. **{name}**: {val:.1%}{marker}")
+        lines.append("")
+
+    if conv_curve:
+        lines.append("## Convergence (cold-start analysis)")
+        lines.append("")
+        lines.append("| samples | without (pinball) | with (pinball) | delta |")
+        lines.append("|---|---|---|---|")
+        for c in conv_curve:
+            lines.append(f"| {c['samples']} | {c['without']} | {c['with']} | {c['delta_pct']}% |")
         lines.append("")
 
     (args.outdir / "summary.md").write_text("\n".join(lines) + "\n")
