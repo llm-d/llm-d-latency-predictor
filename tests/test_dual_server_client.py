@@ -11,8 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import io
+import json
 import os
 import random
+import tarfile
 import time
 
 import pytest
@@ -2034,6 +2037,43 @@ def test_training_server_flush_error_handling():
     print("✓ Flush error handling tests passed!")
 
 
+def test_model_export():
+    """Test GET /model/export returns a valid tar.gz with model files and metadata."""
+    print("Testing model export endpoint...")
+
+    r = requests.get(f"{TRAINING_URL}/model/export", timeout=30)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+    assert r.headers["content-type"] == "application/gzip"
+
+    buf = io.BytesIO(r.content)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        names = tar.getnames()
+        print(f"  Archive contains: {names}")
+
+        assert "metadata.json" in names, "metadata.json missing from archive"
+
+        joblib_files = [n for n in names if n.endswith(".joblib")]
+        assert len(joblib_files) > 0, "No .joblib model files in archive"
+
+        gated_files = [n for n in names if "gated" in n]
+        assert not gated_files, (
+            f"Gated models must not be in seed export (seed load path never uses them): {gated_files}"
+        )
+
+        meta_member = tar.getmember("metadata.json")
+        meta_file = tar.extractfile(meta_member)
+        meta = json.loads(meta_file.read())
+        assert "model_type" in meta, "model_type missing from metadata"
+        assert "quantile_alpha" in meta, "quantile_alpha missing from metadata"
+        assert "exported_at" in meta, "exported_at missing from metadata"
+        print(f"  Metadata: model_type={meta['model_type']}, samples={meta.get('ttft_samples', 'n/a')}")
+
+        for member in tar.getmembers():
+            assert member.mtime > 0, f"{member.name} has mtime=0 (would break sync freshness checks)"
+
+    print(f"✓ Model export passed: {len(joblib_files)} model files + metadata")
+
+
 if __name__ == "__main__":
     print("Running dual-server architecture tests with prefix cache score support...")
     print(f"Prediction server: {PREDICTION_URL}")
@@ -2072,6 +2112,7 @@ if __name__ == "__main__":
         ("XGBoost Trees", test_model_specific_endpoints_on_training_server),
         ("Flush API", test_training_server_flush_api),
         ("Flush Error Handling", test_training_server_flush_error_handling),
+        ("Model Export", test_model_export),
         ("Dual Server Model Learns Equation", test_dual_server_quantile_regression_learns_distribution),
         ("End-to-End Workflow", test_end_to_end_workflow),
     ]

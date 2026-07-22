@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import io
 import json
 import logging
 import os  # Added this import
+import random
+import tarfile
 import threading
 import time
 from collections import deque
@@ -24,7 +27,7 @@ import numpy as np
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
@@ -182,6 +185,18 @@ def quantile_violation_rate(y_true, y_pred, quantile):
     violations = np.sum(y_true > y_pred)
     violation_rate = violations / len(y_true)
     return violation_rate * 100
+
+
+def _get_model_paths():
+    """Canonical mapping of model names to file paths."""
+    return {
+        "ttft": settings.TTFT_MODEL_PATH,
+        "tpot": settings.TPOT_MODEL_PATH,
+        "ttft_scaler": settings.TTFT_SCALER_PATH,
+        "tpot_scaler": settings.TPOT_SCALER_PATH,
+        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
+        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
+    }
 
 
 class LatencyPredictor:
@@ -1438,6 +1453,14 @@ class LatencyPredictor:
                     self.ttft_model = joblib.load(settings.TTFT_MODEL_PATH)
                     if self.model_type == ModelType.BAYESIAN_RIDGE and os.path.exists(settings.TTFT_SCALER_PATH):
                         self.ttft_scaler = joblib.load(settings.TTFT_SCALER_PATH)
+                    meta_path = os.path.join(os.path.dirname(settings.TTFT_MODEL_PATH), "metadata.json")
+                    if os.path.exists(meta_path):
+                        try:
+                            with open(meta_path) as f:
+                                seed_meta = json.load(f)
+                            logging.info("Loaded seed model: %s", seed_meta)
+                        except Exception:
+                            logging.warning("Failed to read seed metadata from %s", meta_path)
                 else:
                     result = self._create_default_model("ttft")
                     if self.model_type == ModelType.BAYESIAN_RIDGE:
@@ -1846,6 +1869,53 @@ async def readiness_check():
     return {"status": "ready"}
 
 
+@app.get("/model/export")
+def export_models():
+    """Bundle trained models and metadata for seeding new deployments."""
+    if not predictor.is_ready:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Models are not ready.")
+
+    # Exclude gated ensemble models from seed bundles: load_models() never
+    # loads them, but the prediction server syncs them on file existence and
+    # would then dispatch all traffic through the source deployment's frozen
+    # gate, masking local base-model retraining until ensemble_active flips.
+    paths = {name: path for name, path in _get_model_paths().items() if name not in ("ttft_gated", "tpot_gated")}
+
+    with predictor.lock:
+        snapshots = {}
+        for name, p in paths.items():
+            if os.path.exists(p):
+                with open(p, "rb") as f:
+                    snapshots[name] = f.read()
+        meta = {
+            "model_type": predictor.model_type.value,
+            "quantile_alpha": settings.QUANTILE_ALPHA,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "ttft_samples": sum(len(d) for d in predictor.ttft_data_buckets.values()),
+            "tpot_samples": sum(len(d) for d in predictor.tpot_data_buckets.values()),
+        }
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in snapshots.items():
+            info = tarfile.TarInfo(name=os.path.basename(paths[name]))
+            info.size = len(data)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(data))
+        meta_bytes = json.dumps(meta, indent=2).encode()
+        meta_info = tarfile.TarInfo(name="metadata.json")
+        meta_info.size = len(meta_bytes)
+        meta_info.mtime = int(time.time())
+        tar.addfile(meta_info, io.BytesIO(meta_bytes))
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/gzip",
+        headers={"Content-Disposition": "attachment; filename=seed-model.tar.gz"},
+    )
+
+
 @app.get("/metrics", status_code=status.HTTP_200_OK)
 async def metrics():
     """Prometheus metrics including coefficients/importances, bucket counts, and quantile-specific metrics."""
@@ -2078,14 +2148,7 @@ async def tpot_xgb_json():
 @app.get("/model/{model_name}/info")
 async def model_info(model_name: str):
     """Get model file information including last modified time."""
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     if model_name not in model_paths:
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_name}")
@@ -2113,14 +2176,7 @@ async def model_info(model_name: str):
 @app.get("/model/{model_name}/download")
 async def download_model(model_name: str):
     """Download a model file."""
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     if model_name not in model_paths:
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_name}")
@@ -2139,14 +2195,7 @@ async def download_model(model_name: str):
 async def list_models():
     """List all available models with their status."""
     models = {}
-    model_paths = {
-        "ttft": settings.TTFT_MODEL_PATH,
-        "tpot": settings.TPOT_MODEL_PATH,
-        "ttft_scaler": settings.TTFT_SCALER_PATH,
-        "tpot_scaler": settings.TPOT_SCALER_PATH,
-        "ttft_gated": settings.TTFT_GATED_MODEL_PATH,
-        "tpot_gated": settings.TPOT_GATED_MODEL_PATH,
-    }
+    model_paths = _get_model_paths()
 
     for model_name, model_path in model_paths.items():
         if os.path.exists(model_path):
