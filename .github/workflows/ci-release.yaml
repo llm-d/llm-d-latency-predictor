@@ -12,56 +12,30 @@ permissions:
   packages: write
 
 jobs:
-  docker-build-and-push:
+  build-images:
+    uses: ./.github/workflows/build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      force_build: true
+    secrets: inherit
+
+  trivy-scan:
+    needs: build-images
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        service:
-          - name: prediction-server
-            dockerfile: prediction/Dockerfile
-          - name: training-server
-            dockerfile: training/Dockerfile
-          - name: test
-            dockerfile: tests/Dockerfile
+        image:
+          - ${{ needs.build-images.outputs.prediction_image }}
+          - ${{ needs.build-images.outputs.training_image }}
+          - ${{ needs.build-images.outputs.test_image }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
 
-      - name: Set project name from repository
-        id: meta
-        run: |
-          repo="${GITHUB_REPOSITORY##*/}"
-          echo "project_name=$repo" >> "$GITHUB_OUTPUT"
-          echo "image_name=$repo-${{ matrix.service.name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Determine tag
-        id: tag
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            tag="${GITHUB_REF##refs/tags/}"
-            prerelease="${{ github.event.release.prerelease }}"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF##refs/tags/}"
-            # Semver pre-releases (v1.2.3-rc.1) contain '-'; never tag them 'latest'.
-            [[ "$tag" == *-* ]] && prerelease=true || prerelease=false
-          else
-            tag="latest"
-            prerelease=false
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
-        shell: bash
-
-      - name: Build and push
-        uses: ./.github/actions/docker-build-and-push
-        with:
-          image-name: ${{ steps.meta.outputs.image_name }}
-          tag: ${{ steps.tag.outputs.tag }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: ${{ steps.tag.outputs.prerelease }}
-          dockerfile: ${{ matrix.service.dockerfile }}
-
       - name: Trivy security scan
         uses: ./.github/actions/trivy-scan
         with:
-          image: ghcr.io/llm-d/${{ steps.meta.outputs.image_name }}:${{ steps.tag.outputs.tag }}
+          image: ${{ matrix.image }}

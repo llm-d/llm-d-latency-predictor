@@ -1,0 +1,48 @@
+name: CI - PR Build
+
+# pull_request_target runs with the base repo's token, which has packages:write
+# access to ghcr.io/llm-d/*. This is required for fork PRs to push images.
+# Security: org membership is required for workflows to run without approval,
+# so untrusted code cannot reach this workflow without a maintainer approving it.
+on:
+  pull_request_target:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  check-code-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_code_changes: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check for code changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - '!docs/**'
+              - '!**/*.md'
+              - '!LICENSE'
+              - '!OWNERS'
+
+  container-build:
+    needs: check-code-changes
+    if: needs.check-code-changes.outputs.has_code_changes == 'true'
+    uses: ./.github/workflows/build-image.yaml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+      image_suffix: "-dev"
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit

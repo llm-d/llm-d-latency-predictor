@@ -1,47 +1,274 @@
 name: Build and Push Images
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - 'OWNERS'
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build from"
+        type: string
+        default: ""
+      force_build:
+        description: "Build all images regardless of change detection"
+        type: boolean
+        default: false
+      image_suffix:
+        description: "Suffix appended to image names (e.g. '-dev' for PR builds)"
+        type: string
+        default: ""
+    outputs:
+      prediction_image:
+        description: "Full image ref for the prediction server"
+        value: ${{ jobs.build-prediction.outputs.image }}
+      training_image:
+        description: "Full image ref for the training server"
+        value: ${{ jobs.build-training.outputs.image }}
+      test_image:
+        description: "Full image ref for the test runner"
+        value: ${{ jobs.build-test.outputs.image }}
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Build all images regardless of change detection"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/llm-d/llm-d-latency-predictor
+
+concurrency:
+  group: build-image-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-push:
+  detect-changes:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - name: prediction-server
-            dockerfile: Dockerfile-prediction
-          - name: training-server
-            dockerfile: Dockerfile-training
-          - name: test
-            dockerfile: Dockerfile-test
+    outputs:
+      prediction: ${{ steps.force.outputs.all || steps.filter.outputs.prediction }}
+      training: ${{ steps.force.outputs.all || steps.filter.outputs.training }}
+      test: ${{ steps.force.outputs.all || steps.filter.outputs.test }}
+    steps:
+      - name: Force all builds
+        if: inputs.force_build == true
+        id: force
+        run: echo "all=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        if: inputs.force_build != true
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Detect changed paths
+        if: inputs.force_build != true
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            prediction:
+              - 'prediction/**'
+              - 'common/**'
+              - 'pyproject.toml'
+              - 'requirements.txt'
+            training:
+              - 'training/**'
+              - 'common/**'
+              - 'pyproject.toml'
+              - 'requirements.txt'
+            test:
+              - 'tests/**'
+              - 'prediction/**'
+              - 'training/**'
+              - 'common/**'
+              - 'pyproject.toml'
+              - 'requirements.txt'
+
+  build-prediction:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.prediction == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.ref }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || '' }}
 
-      - name: Set image metadata
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate image metadata
         id: meta
-        run: |
-          repo="${GITHUB_REPOSITORY##*/}"
-          echo "image_name=${repo}-${{ matrix.service.name }}-dev" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_BASE }}-prediction-server${{ inputs.image_suffix }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=commit-${{ steps.sha.outputs.short }},enable={{is_default_branch}}
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
       - name: Build and push
-        uses: ./.github/actions/docker-build-and-push
+        uses: docker/build-push-action@v7
         with:
-          image-name: ${{ steps.meta.outputs.image_name }}
-          tag: ${{ steps.meta.outputs.short_sha }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: "false"
-          dockerfile: ${{ matrix.service.dockerfile }}
+          context: .
+          file: prediction/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image ref
+        id: image-ref
+        run: |
+          first_tag=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "ref=${first_tag}" >> "$GITHUB_OUTPUT"
+
+  build-training:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.training == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.ref }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_BASE }}-training-server${{ inputs.image_suffix }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=commit-${{ steps.sha.outputs.short }},enable={{is_default_branch}}
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: training/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image ref
+        id: image-ref
+        run: |
+          first_tag=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "ref=${first_tag}" >> "$GITHUB_OUTPUT"
+
+  build-test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.test == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.ref }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_BASE }}-test${{ inputs.image_suffix }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=sha-${{ steps.sha.outputs.short }},enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=commit-${{ steps.sha.outputs.short }},enable={{is_default_branch}}
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: tests/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image ref
+        id: image-ref
+        run: |
+          first_tag=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "ref=${first_tag}" >> "$GITHUB_OUTPUT"
