@@ -34,13 +34,20 @@ A feature change is validated when the PR includes:
 # Install dependencies
 pip install -r benchmarks/requirements.txt
 
-# Run the full validation pipeline
+# Run with the included reference trace
 python benchmarks/run_validation.py \
-    --trace trace.jsonl \
+    --trace benchmarks/traces/sharegpt-h200.jsonl \
     --feature <feature_name> \
     --seeds 10 \
-    --workload-spec benchmarks/workload-spec.yaml \
+    --workload-spec benchmarks/traces/sharegpt-h200-spec.yaml \
     --outdir results/<feature_name> \
+    --shap --json
+
+# Or bring your own trace
+python benchmarks/run_validation.py \
+    --trace /path/to/your/trace.jsonl \
+    --feature <feature_name> \
+    --seeds 10 \
     --shap --json
 ```
 

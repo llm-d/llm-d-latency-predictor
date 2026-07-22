@@ -52,6 +52,8 @@ QUANTILE = 0.9
 # column order (training_server.py:389-395, 412-416, 419-423).
 CONDITIONAL_FEATURES = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
 
+ENCODER_FEATURES = ["encoder_matched_size", "encoder_input_size"]
+
 PREFIX_BUCKETS = 4
 
 
@@ -77,9 +79,10 @@ def _lgbm_factory(seed, quantile=QUANTILE):
         n_estimators=200, max_depth=6, learning_rate=0.05,
         objective="quantile", alpha=quantile,
         subsample=0.8, colsample_bytree=0.8,
-        min_child_weight=5,
-        reg_alpha=0.01, reg_lambda=0.1,
-        random_state=seed, verbosity=-1,
+        min_child_samples=20,
+        reg_alpha=0.1, reg_lambda=0.1,
+        n_jobs=-1, random_state=seed, verbosity=-1,
+        force_col_wise=True,
     )
 
 
@@ -119,7 +122,7 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     if "num_tokens_generated" not in df.columns:
         df["num_tokens_generated"] = 0
-    for col in CONDITIONAL_FEATURES:
+    for col in CONDITIONAL_FEATURES + ENCODER_FEATURES:
         if col not in df.columns:
             df[col] = 0
     return df
@@ -128,15 +131,17 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
 def _resolve_ttft_features(df: pd.DataFrame, feature: str | None) -> tuple[list[str], list[str]]:
     """Return (without_features, with_features) for TTFT A/B arms.
 
-    Column order matches production (training_server.py:412-416):
-    base5 + tif_cols + [prefix_cache_score, effective_input_tokens,
+    Column order matches production training_server.py:
+    base5 + tif_cols + encoder_cols + [prefix_cache_score, effective_input_tokens,
     prefill_score_bucket, pod_type_cat].
     """
     tif = [col for col in CONDITIONAL_FEATURES if col in df.columns and df[col].sum() > 0]
+    enc = [col for col in ENCODER_FEATURES if col in df.columns and df[col].sum() > 0]
     base = (
         ["is_queued", "kv_cache_percentage", "input_token_length",
          "num_request_waiting", "num_request_running"]
         + tif
+        + enc
         + ["prefix_cache_score", "effective_input_tokens",
            "prefill_score_bucket", "pod_type_cat"]
     )

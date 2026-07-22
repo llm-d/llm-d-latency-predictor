@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -30,8 +30,8 @@ jobs:
       - name: Run offline A/B validation
         run: |
           python benchmarks/run_validation.py \
-            --trace benchmarks/traces/baseline.jsonl \
-            --feature ${FEATURE:-prefill_density} \
+            --trace benchmarks/traces/sharegpt-h200.jsonl \
+            --feature ${FEATURE:?Set FEATURE env var to the column name to A/B test} \
             --seeds 5 \
             --json \
             --outdir /tmp/ab-results
