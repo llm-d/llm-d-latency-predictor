@@ -1,10 +1,18 @@
-# DRAFT — Offline A/B validation for latency predictor feature PRs.
-# Runs on CPU using a frozen baseline trace — no GPU runner needed.
+# Offline A/B validation for latency predictor feature PRs.
+# Runs on CPU using a committed baseline trace — no GPU runner needed.
 #
 # To enable: move this file to .github/workflows/ and add as a required check.
-# Requires a baseline trace committed at benchmarks/traces/baseline.jsonl.
+#
+# How it works:
+#   1. PR author creates benchmarks/ci/feature.env with FEATURE=<column_name>
+#   2. CI loads that file, runs offline A/B against the baseline trace
+#   3. Uploads calibration plots + summary as artifacts
+#   4. Exits 0 (gates passed) or 1 (contention/self-test failed)
+#
+# If benchmarks/ci/feature.env doesn't exist, the job is skipped —
+# so PRs that don't add features (bug fixes, CI, docs) are not blocked.
 
-name: "Feature A/B Validation (draft)"
+name: "Feature A/B Validation"
 
 on:
   pull_request:
@@ -12,7 +20,7 @@ on:
       - 'prediction/**'
       - 'training/**'
       - 'common/**'
-      - 'src/**'
+      - 'benchmarks/ci/feature.env'
 
 jobs:
   offline-ab:
@@ -20,24 +28,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check for feature declaration
+        id: check
+        run: |
+          if [ -f benchmarks/ci/feature.env ]; then
+            source benchmarks/ci/feature.env
+            echo "feature=${FEATURE}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No benchmarks/ci/feature.env found — skipping A/B validation"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v7
+        if: steps.check.outputs.skip == 'false'
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
         run: pip install -r benchmarks/requirements.txt
 
       - name: Run offline A/B validation
+        if: steps.check.outputs.skip == 'false'
         run: |
           python benchmarks/run_validation.py \
             --trace benchmarks/traces/sharegpt-h200.jsonl \
-            --feature ${FEATURE:?Set FEATURE env var to the column name to A/B test} \
+            --feature ${{ steps.check.outputs.feature }} \
             --seeds 5 \
             --json \
             --outdir /tmp/ab-results
 
       - name: Upload artifacts
-        if: always()
+        if: steps.check.outputs.skip == 'false' && always()
         uses: actions/upload-artifact@v4
         with:
           name: feature-ab-results
