@@ -349,6 +349,7 @@ class LightweightPredictor:
 
         if model_type == "ttft":
             df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * df["input_token_length"]
+            df["prefill_density"] = df["num_request_running"] / df["input_token_length"].clip(lower=1)
             df["prefill_score_bucket"] = (
                 (df["prefix_cache_score"].clip(0, 1) * self.prefix_buckets)
                 .astype(int)
@@ -361,7 +362,13 @@ class LightweightPredictor:
             feature_cols = (
                 ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + _tif
-                + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
+                + [
+                    "prefix_cache_score",
+                    "effective_input_tokens",
+                    "prefill_density",
+                    "prefill_score_bucket",
+                    "pod_type_cat",
+                ]
             )
             return df[feature_cols]
 
