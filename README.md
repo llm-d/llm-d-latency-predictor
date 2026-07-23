@@ -7,7 +7,16 @@
 
 ## Overview
 
-<!-- TODO: Describe what this project does, why it exists, and how it fits into the llm-d ecosystem -->
+`llm-d-latency-predictor` is the ML training and serving component behind
+[predicted latency-based scheduling](https://llm-d.ai/blog/predicted-latency-based-scheduling-for-llms)
+in the [llm-d](https://github.com/llm-d/llm-d) ecosystem.
+
+It runs two FastAPI services as sidecars to the Endpoint picker:
+
+- **Training server** — ingests observed request traces (TTFT / TPOT and load features) after a completed request and periodically retrains regression models (XGBoost by default; LightGBM and Bayesian Ridge also supported).
+- **Prediction server** — syncs those models and serves low-latency TTFT / TPOT predictions for candidate pods based on the features such as KV-cache utilization, queue depth, prefix-cache score, and running requests.
+
+The EPP's predicted-latency plugins call the prediction API at schedule time to score endpoints, then feed completed-request metrics back to the training server so models in real-time. That enables routing on predicted p90 TTFT/TPOT (optionally against per-request SLOs) instead of utilization.
 
 ## Prerequisites
 
@@ -78,7 +87,13 @@ uvicorn training.training_server:app --port 8000
 
 ## Architecture
 
-<!-- TODO: Add architecture overview, diagrams, or links to design docs -->
+
+![llm-d latency predictor architecture](docs/latency-predictor.jpg)
+
+1. A chat completion request hits the proxy, which consults the EPP.
+2. The EPP calls the prediction server with current pod state and request features.
+3. Predictions guide pod selection; the proxy routes the request into the InferencePool.
+4. After serving, the EPP sends samples to the training server, which writes updated models to the shared volume for the prediction server to read.
 
 ## Configuration
 
