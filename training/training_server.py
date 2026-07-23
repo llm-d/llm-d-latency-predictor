@@ -78,6 +78,10 @@ class Settings:
     ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = (
         os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
     )
+    # Off by default: a persisted model trained before these columns existed would
+    # fail on feature-count mismatch until its first retrain. Operators enable this
+    # once training and prediction servers are on code that emits the columns.
+    ENABLE_ENCODER_FEATURES: bool = os.getenv("LATENCY_ENABLE_ENCODER_FEATURES", "false").lower() == "true"
 
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     TTFT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TTFT_GATED_MODEL_PATH", "/tmp/models/ttft_gated.joblib")
@@ -395,10 +399,15 @@ class LatencyPredictor:
             tif_cols = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
 
         if model_type == "ttft":
-            # Encoder columns (multimodal): populate if present, else zero-fill for safety
-            for col in ("encoder_matched_size", "encoder_input_size"):
-                if col not in df.columns:
-                    df[col] = 0
+            # Encoder columns (multimodal, TTFT-only): populate if present/enabled,
+            # else zero-fill for safety. Gated so old models without these columns
+            # keep predicting until their first retrain.
+            enc_cols = []
+            if settings.ENABLE_ENCODER_FEATURES:
+                for col in ("encoder_matched_size", "encoder_input_size"):
+                    if col not in df.columns:
+                        df[col] = 0
+                enc_cols = ["encoder_matched_size", "encoder_input_size"]
 
             # Create interaction: prefix score * input length
             # This captures that prefix caching benefit scales with input size
@@ -417,7 +426,7 @@ class LatencyPredictor:
             feature_cols = (
                 ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + tif_cols
-                + ["encoder_matched_size", "encoder_input_size"]
+                + enc_cols
                 + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
             )
             return df[feature_cols]
@@ -504,7 +513,7 @@ class LatencyPredictor:
                         if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES
                         else []
                     )
-                    _enc = ["encoder_matched_size", "encoder_input_size"]
+                    _enc = ["encoder_matched_size", "encoder_input_size"] if settings.ENABLE_ENCODER_FEATURES else []
                     if drop_queue_features:
                         ttft_order = (
                             ["kv_cache_percentage", "input_token_length", "num_request_running"]
@@ -692,7 +701,7 @@ class LatencyPredictor:
                 else []
             )
             if model_name == "ttft":
-                _enc = ["encoder_matched_size", "encoder_input_size"]
+                _enc = ["encoder_matched_size", "encoder_input_size"] if settings.ENABLE_ENCODER_FEATURES else []
                 if self.model_type == ModelType.BAYESIAN_RIDGE:
                     feature_cols = (
                         [
@@ -833,7 +842,7 @@ class LatencyPredictor:
                         if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES
                         else []
                     )
-                    _enc = ["encoder_matched_size", "encoder_input_size"]
+                    _enc = ["encoder_matched_size", "encoder_input_size"] if settings.ENABLE_ENCODER_FEATURES else []
                     ttft_feature_cols_tree = (
                         [
                             "is_queued",
@@ -1511,13 +1520,27 @@ class LatencyPredictor:
                         for f in feats:
                             lines.append(f'{prefix}_coef{{feature="{f}"}} 0.0')
                 else:
-                    # XGBoost/LightGBM importances
+                    # XGBoost/LightGBM importances. Label from the model's own feature
+                    # names (recorded at fit time from the training DataFrame) so labels
+                    # track importances no matter which optional feature groups
+                    # (token-in-flight, encoder) were enabled at train time. A hardcoded
+                    # list would mislabel every column after a disabled group, since
+                    # zip() pairs by position.
                     try:
                         imps = model.feature_importances_
                     except Exception:
                         imps = [0.0] * len(feats)
+                    names = getattr(model, "feature_names_in_", None)
+                    if names is None:
+                        try:
+                            names = model.booster_.feature_name()  # LightGBM
+                        except Exception:
+                            try:
+                                names = model.get_booster().feature_names  # XGBoost
+                            except Exception:
+                                names = feats
                     lines.append(f"{prefix}_intercept{{}} 0.0")
-                    for f, imp in zip(feats, imps):
+                    for f, imp in zip(names, imps):
                         lines.append(f'{prefix}_importance{{feature="{f}"}} {imp:.6f}')
 
             if self.model_type == ModelType.BAYESIAN_RIDGE:
