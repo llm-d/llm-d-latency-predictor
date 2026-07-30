@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import io
 import json
 import logging
@@ -38,6 +40,7 @@ try:
 
     XGBOOST_AVAILABLE = True
 except (ImportError, OSError) as e:
+    xgb = None
     XGBOOST_AVAILABLE = False
     logging.warning("XGBoost not available: %s. Please install with: pip install xgboost", e)
 
