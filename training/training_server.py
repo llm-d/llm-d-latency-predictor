@@ -33,6 +33,7 @@ from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 
+from training.aci import ACIState
 from training.calibration import CalibrationTrigger
 
 try:
@@ -102,6 +103,19 @@ class Settings:
     CALIBRATION_TRIGGER_THRESHOLD: float = float(os.getenv("LATENCY_CALIBRATION_TRIGGER_THRESHOLD", "5.0"))
     CALIBRATION_TRIGGER_K: int = int(os.getenv("LATENCY_CALIBRATION_TRIGGER_K", 2))
     CALIBRATION_EMA_ALPHA: float = float(os.getenv("LATENCY_CALIBRATION_EMA_ALPHA", "0.3"))
+
+    # Adaptive Conformal Inference (#19). When enabled, a one-sided upper offset c_t
+    # is adapted online in the continuous-coverage loop and added to the served
+    # quantile in predict(), keeping interval coverage valid between retrains.
+    # Opt-in; no effect on the prediction path when disabled.
+    ACI_ENABLED: bool = os.getenv("LATENCY_ACI_ENABLED", "false").lower() == "true"
+    ACI_GAMMA: float = float(os.getenv("LATENCY_ACI_GAMMA", "0.02"))
+    # Conformity-score buffer length. The alpha_t step is asymmetric by design --
+    # down gamma*(1-target) on a miss vs up gamma*target on a cover -- so ACI widens
+    # into drift fast but relaxes out slowly, and after a transient the offset rides
+    # the buffer's top quantiles until it turns over. Size this to the drift timescale
+    # you care about rather than larger; rebase() already handles the retrain case.
+    ACI_BUFFER: int = int(os.getenv("LATENCY_ACI_BUFFER", "1000"))
 
 
 settings = Settings()
@@ -276,6 +290,15 @@ class LatencyPredictor:
         self.ttft_violation_rates = deque(maxlen=5)
         self.tpot_violation_rates = deque(maxlen=5)
 
+        # Adaptive Conformal Inference state (one-sided upper, per target). See aci.py.
+        _aci_target = 1.0 - settings.QUANTILE_ALPHA
+        self.ttft_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
+        self.tpot_aci = ACIState(settings.ACI_GAMMA, settings.ACI_BUFFER, _aci_target)
+        # Coverage of the ACI-adjusted interval (qhat + c_t); the static
+        # *_coverage_scores answer "is there drift?", these answer "are we meeting
+        # the SLO despite it?".
+        self.ttft_aci_coverage_scores = deque(maxlen=5)
+        self.tpot_aci_coverage_scores = deque(maxlen=5)
         # Live coverage from the continuous coverage loop: evaluations of the
         # currently loaded model between retrains. Kept separate from the
         # per-retrain deques above so ttft/tpot_coverage_percent retain their
@@ -726,6 +749,14 @@ class LatencyPredictor:
             logging.error(f"Error in _train_model_with_scaling: {e}", exc_info=True)
             raise
 
+    def _aci_apply(self, which: str, pred: float) -> float:
+        """Add the adaptive-conformal offset c_t to a quantile prediction.
+        No-op when ACI is disabled."""
+        if not settings.ACI_ENABLED:
+            return pred
+        aci = self.ttft_aci if which == "ttft" else self.tpot_aci
+        return pred + aci.offset()
+
     def evaluate_current_coverage(self) -> tuple[float | None, float | None]:
         """Re-evaluate coverage on the *currently loaded* model + test buffer,
         without retraining. Appends to {ttft,tpot}_live_coverage_scores (its own
@@ -751,18 +782,33 @@ class LatencyPredictor:
         tpot_cov: float | None = None
 
         if ttft_test and ttft_model is not None:
-            _, cov, _ = self._calculate_metrics_on_test(ttft_model, ttft_scaler, ttft_test, "ttft", "actual_ttft_ms")
+            _, cov, _, ttft_scores = self._calculate_metrics_on_test(
+                ttft_model, ttft_scaler, ttft_test, "ttft", "actual_ttft_ms"
+            )
             if cov is not None:
                 with self.lock:
                     self.ttft_live_coverage_scores.append(cov)
                 ttft_cov = cov
+            if settings.ACI_ENABLED and ttft_scores is not None:
+                # Coverage of the served interval qhat + c_t (score <= c_t).
+                aci_cov = float(np.mean(ttft_scores <= self.ttft_aci.offset())) * 100.0
+                with self.lock:
+                    self.ttft_aci_coverage_scores.append(aci_cov)
+                self.ttft_aci.update_batch(ttft_scores)
 
         if tpot_test and tpot_model is not None:
-            _, cov, _ = self._calculate_metrics_on_test(tpot_model, tpot_scaler, tpot_test, "tpot", "actual_tpot_ms")
+            _, cov, _, tpot_scores = self._calculate_metrics_on_test(
+                tpot_model, tpot_scaler, tpot_test, "tpot", "actual_tpot_ms"
+            )
             if cov is not None:
                 with self.lock:
                     self.tpot_live_coverage_scores.append(cov)
                 tpot_cov = cov
+            if settings.ACI_ENABLED and tpot_scores is not None:
+                aci_cov = float(np.mean(tpot_scores <= self.tpot_aci.offset())) * 100.0
+                with self.lock:
+                    self.tpot_aci_coverage_scores.append(aci_cov)
+                self.tpot_aci.update_batch(tpot_scores)
 
         return ttft_cov, tpot_cov
 
@@ -778,7 +824,7 @@ class LatencyPredictor:
             df_raw = df_raw[df_raw[target_col] > 0]
 
             if len(df_raw) < 2:
-                return None, None, None
+                return None, None, None, None
 
             df_features = self._prepare_features_with_interaction(df_raw.copy(), model_type=model_name)
 
@@ -841,7 +887,7 @@ class LatencyPredictor:
             if self.objective_type == ObjectiveType.MEAN:
                 mae = float(np.mean(np.abs(y_true - y_pred)))
                 rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-                return mae, rmse, None
+                return mae, rmse, None, None
 
             # Quantile objective
             if self.model_type == ModelType.BAYESIAN_RIDGE:
@@ -852,11 +898,11 @@ class LatencyPredictor:
             ql = quantile_loss(y_true, y_pred, self.quantile)
             coverage = quantile_coverage(y_true, y_pred, self.quantile)
             violation_rate = quantile_violation_rate(y_true, y_pred, self.quantile)
-            return ql, coverage, violation_rate
+            return ql, coverage, violation_rate, (y_true - y_pred)
 
         except Exception as e:
             logging.error(f"Error calculating metrics: {e}", exc_info=True)
-            return None, None, None
+            return None, None, None, None
 
     def _create_default_model(self, model_type: str) -> tuple[BayesianRidge, StandardScaler] | (
         xgb.XGBRegressor | lgb.LGBMRegressor
@@ -995,7 +1041,7 @@ class LatencyPredictor:
                         # Evaluate on test set
                         m1 = m2 = m3 = None
                         if self.ttft_test_data:
-                            m1, m2, m3 = self._calculate_metrics_on_test(
+                            m1, m2, m3, _ = self._calculate_metrics_on_test(
                                 new_ttft_model, new_ttft_scaler, list(self.ttft_test_data), "ttft", "actual_ttft_ms"
                             )
 
@@ -1043,7 +1089,7 @@ class LatencyPredictor:
                             new_tpot_scaler = None
 
                         # Evaluate on test set
-                        m1, m2, m3 = self._calculate_metrics_on_test(
+                        m1, m2, m3, _ = self._calculate_metrics_on_test(
                             new_tpot_model, new_tpot_scaler, list(self.tpot_test_data), "tpot", "actual_tpot_ms"
                         )
 
@@ -1184,6 +1230,11 @@ class LatencyPredictor:
 
                 if self.is_ready:
                     self.last_retrain_time = datetime.now(UTC)
+                    if settings.ACI_ENABLED:
+                        # Stale scores were computed against the old qhat; the fresh
+                        # model absorbs the shift, so rebase to avoid over-coverage.
+                        self.ttft_aci.rebase()
+                        self.tpot_aci.rebase()
                     try:
                         self._save_models_unlocked()
                     except Exception:
@@ -1276,7 +1327,12 @@ class LatencyPredictor:
                     ttft_pred = ttft_pred_mean[0] + std_factor * ttft_std[0]
                     tpot_pred = tpot_pred_mean[0] + std_factor * tpot_std[0]
 
-                    return ttft_pred, tpot_pred, ttft_std[0], tpot_std[0]
+                    return (
+                        self._aci_apply("ttft", ttft_pred),
+                        self._aci_apply("tpot", tpot_pred),
+                        ttft_std[0],
+                        tpot_std[0],
+                    )
 
                 elif self.model_type == ModelType.XGBOOST:
                     # XGBoost quantile regression directly predicts the quantile
@@ -1287,7 +1343,12 @@ class LatencyPredictor:
                     ttft_std = ttft_pred[0] * 0.1  # 10% of prediction as uncertainty estimate
                     tpot_std = tpot_pred[0] * 0.1
 
-                    return ttft_pred[0], tpot_pred[0], ttft_std, tpot_std
+                    return (
+                        self._aci_apply("ttft", ttft_pred[0]),
+                        self._aci_apply("tpot", tpot_pred[0]),
+                        ttft_std,
+                        tpot_std,
+                    )
 
                 else:  # LightGBM with quantile regression
                     # LightGBM quantile regression directly predicts the quantile
@@ -1298,7 +1359,12 @@ class LatencyPredictor:
                     ttft_std = ttft_pred[0] * 0.1  # 10% of prediction as uncertainty estimate
                     tpot_std = tpot_pred[0] * 0.1
 
-                    return ttft_pred[0], tpot_pred[0], ttft_std, tpot_std
+                    return (
+                        self._aci_apply("ttft", ttft_pred[0]),
+                        self._aci_apply("tpot", tpot_pred[0]),
+                        ttft_std,
+                        tpot_std,
+                    )
 
         except ValueError as ve:
             logging.warning(f"Client error in predict(): {ve}")
@@ -1824,6 +1890,19 @@ class LatencyPredictor:
                 for idx, coverage in enumerate(self.tpot_coverage_scores):
                     lines.append(f'tpot_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
 
+                # Adaptive Conformal Inference (#19): alpha_t doubles as a drift
+                # detector (drifts off target when the model is miscalibrated);
+                # offset_ms is the added interval width c_t.
+                if settings.ACI_ENABLED:
+                    lines.append(f"ttft_aci_alpha{{}} {self.ttft_aci.alpha:.6f}")
+                    lines.append(f"tpot_aci_alpha{{}} {self.tpot_aci.alpha:.6f}")
+                    lines.append(f"ttft_aci_offset_ms{{}} {self.ttft_aci.offset():.6f}")
+                    lines.append(f"tpot_aci_offset_ms{{}} {self.tpot_aci.offset():.6f}")
+                    # Coverage of the ACI-adjusted interval (confirms the SLO is met).
+                    for idx, c in enumerate(self.ttft_aci_coverage_scores):
+                        lines.append(f'ttft_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
+                    for idx, c in enumerate(self.tpot_aci_coverage_scores):
+                        lines.append(f'tpot_aci_coverage_percent{{idx="{idx}"}} {c:.6f}')
                 # 5b) Live coverage from the continuous coverage loop
                 #     (evaluations of the current model between retrains).
                 #     Separate family so the per-retrain series above stay
