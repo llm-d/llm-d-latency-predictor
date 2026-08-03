@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import io
 import json
 import logging
@@ -37,17 +39,19 @@ try:
     import xgboost as xgb
 
     XGBOOST_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
+    xgb = None
     XGBOOST_AVAILABLE = False
-    logging.warning("XGBoost not available. Please install with: pip install xgboost")
+    logging.warning("XGBoost not available: %s. Please install with: pip install xgboost", e)
 
 try:
     import lightgbm as lgb
 
     LIGHTGBM_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
     LIGHTGBM_AVAILABLE = False
-    logging.warning("LightGBM not available. Please install with: pip install lightgbm")
+    lgb = None
+    logging.warning("LightGBM not available: %s. Please install with: pip install lightgbm", e)
 
 from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque
 

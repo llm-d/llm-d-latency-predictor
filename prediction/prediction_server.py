@@ -45,17 +45,19 @@ try:
     import xgboost as xgb
 
     XGBOOST_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
+    xgb = None
     XGBOOST_AVAILABLE = False
-    logging.warning("XGBoost not available. Install with: pip install xgboost")
+    logging.warning("XGBoost not available: %s. Install with: pip install xgboost", e)
 
 try:
     import lightgbm as lgb
 
     LIGHTGBM_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
+    lgb = None
     LIGHTGBM_AVAILABLE = False
-    logging.warning("LightGBM not available. Install with: pip install lightgbm")
+    logging.warning("LightGBM not available: %s. Install with: pip install lightgbm", e)
 
 from common.types import ModelType, ObjectiveType, QueueGatedModel
 
