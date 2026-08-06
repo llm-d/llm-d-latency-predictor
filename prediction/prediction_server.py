@@ -767,7 +767,7 @@ class LightweightPredictor:
             pcs = np.fromiter((r.prefix_cache_score for r in reqs), dtype=np.float64, count=n)
             if settings.ENABLE_ENCODER_FEATURES:
                 ems = np.fromiter((r.encoder_matched_size for r in reqs), dtype=np.float64, count=n)
-                eis = np.fromiter((r.encoder_input_size for r in reqs), dtype=np.float64, count=n)
+                is = np.fromiter((r.encoder_input_size for r in reqs), dtype=np.float64, count=n)
             if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
                 pti = np.fromiter((r.prefill_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
                 dti = np.fromiter((r.decode_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
@@ -800,7 +800,7 @@ class LightweightPredictor:
             )
             if settings.ENABLE_ENCODER_FEATURES:
                 df_ttft_raw["encoder_matched_size"] = ems
-                df_ttft_raw["encoder_input_size"] = eis
+                df_ttft_raw["encoder_input_size"] = is
             df_tpot_raw = pd.DataFrame(
                 {
                     "kv_cache_percentage": kv,
