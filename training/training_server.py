@@ -1825,7 +1825,7 @@ class PredictionResponse(BaseModel):
 
 
 class BulkTrainingRequest(BaseModel):
-    entries: list[TrainingEntry]
+    entries: list[TrainingEntry] = Field(..., min_length=1, max_length=10000)
 
 
 # --- Background Training Loop ---
