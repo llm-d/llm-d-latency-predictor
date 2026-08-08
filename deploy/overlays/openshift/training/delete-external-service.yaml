@@ -1,0 +1,6 @@
+# Drop the external training LoadBalancer (not used on OpenShift).
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: training-service-external

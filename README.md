@@ -66,6 +66,17 @@ tests/
   test_dual_server_client.py  # integration / load-test client exercising both servers
   Dockerfile                  # Image that runs the test client as a Job
 deploy/                       # Kubernetes manifests and kustomization
+  base                        # Environment-agnostic base manifests
+    prediction                # Prediction server (Deployment, Service)
+    test                      # Test client Job
+    training                  # Training server (Deployment, Service, PVC)
+    kustomization.yaml        # Ties the base resources together
+  overlays                    # Environment-specific customizations
+    openshift                 # OCP overlay (Routes, SCC-friendly settings)
+      prediction              # Prediction server patches + Route
+      test                    # Test client Job patches
+      training                # Training server patches
+      kustomization.yaml      # References base + applies OpenShift patches
 build-deploy.sh               # Helper script for building images and deploying to GKE
 ```
 
