@@ -854,7 +854,7 @@ numpy==2.4.6 \
     #   scikit-learn
     #   scipy
     #   xgboost
-nvidia-nccl-cu12==2.30.7 ; sys_platform == 'linux' \
+nvidia-nccl-cu12==2.30.7 ; sys_platform == 'linux' and platform_machine != 's390x' \
     --hash=sha256:03ecd776fd1d58fd2c9a0a687dcf8db9ecd0057382dba646fa3d65786d4a9ea1 \
     --hash=sha256:8ce1b8213f61f2bfac132e6df890af6450b77cbd140c6ce4e98cb0c2d8e678c9
     # via xgboost
