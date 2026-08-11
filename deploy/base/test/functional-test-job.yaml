@@ -1,0 +1,55 @@
+# --- Functional Test Job ---
+# Runs the full test suite excluding stress tests.
+# Verifies API correctness, health checks, model sync, and feature behavior.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: latency-predictor-functional-test
+  labels:
+    app: latency-predictor-test
+    component: functional-test
+spec:
+  template:
+    metadata:
+      labels:
+        app: latency-predictor-test
+        component: functional-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test-runner
+          image: placeholder-for-test-image
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "2000m"
+              memory: "8Gi"
+          env:
+            - name: TRAINING_SERVER_URL
+              value: "http://training-service:8000"
+            - name: PREDICTION_SERVER_URL
+              value: "http://prediction-service:80"
+            - name: TEST_TIMEOUT
+              value: "300"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command: ["pytest"]
+          args:
+            - "-v"
+            - "-s"
+            - "--no-header"
+            - "tests/test_dual_server_client.py"
+            - "-k"
+            - "not stress"
+          volumeMounts:
+            - name: test-results
+              mountPath: /test-results
+      volumes:
+        - name: test-results
+          emptyDir: {}
+  backoffLimit: 1

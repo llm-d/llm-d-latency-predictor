@@ -2,10 +2,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - job.yaml
-
-images:
-  # Replace the placeholder test image with the actual built image
-  - name: placeholder-for-test-image
-    newName: us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension/latency-prediction-test
-    newTag: latest
+  - functional-test-job.yaml
+  # Uncomment to include stress/regression tests (requires high-resource cluster)
+  # - stress-test-job.yaml

@@ -11,8 +11,7 @@ namespace: default
 resources:
   - training
   - prediction
-  # Uncomment to include the test job
-  # - test
+  - test
 
 # Common labels applied to all resources
 labels:

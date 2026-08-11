@@ -5,7 +5,6 @@ kind: PersistentVolumeClaim
 metadata:
   name: training-models-pvc
 spec:
-  storageClassName: hyperdisk-balanced-sc  # Explicitly use the compatible StorageClass
   accessModes:
     - ReadWriteOnce  # Sufficient since only the leader pod writes to the volume.
   resources:

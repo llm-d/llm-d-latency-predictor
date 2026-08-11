@@ -1,0 +1,223 @@
+name: CI - PR Functional Tests
+
+# Runs functional tests against PR images in a Kind cluster.
+# Uses pull_request_target for ghcr.io access (same security model as ci-pr-build).
+on:
+  pull_request_target:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_BASE: ghcr.io/llm-d/llm-d-latency-predictor
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - name: Check if build is authorized
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          has_label=$(echo '${{ toJSON(github.event.pull_request.labels.*.name) }}' | jq 'any(. == "ok-to-build")')
+          if [ "$has_label" = "true" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "Authorized: 'ok-to-build' label present"
+            exit 0
+          fi
+
+          author="${{ github.event.pull_request.user.login }}"
+          status=$(gh api "orgs/llm-d/members/$author" --silent 2>&1 && echo "member" || echo "not-member")
+          if [ "$status" = "member" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "Authorized: $author is an llm-d org member"
+            exit 0
+          fi
+
+          echo "allowed=false" >> "$GITHUB_OUTPUT"
+          echo "Not authorized: $author is not an llm-d org member and PR lacks 'ok-to-build' label"
+
+  check-changes:
+    needs: authorize
+    if: needs.authorize.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      needs_build: ${{ steps.filter.outputs.code }}
+      needs_test: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.deploy == 'true' }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
+
+      - name: Detect changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'prediction/**'
+              - 'training/**'
+              - 'tests/**'
+              - 'common/**'
+              - 'pyproject.toml'
+              - 'requirements.txt'
+            deploy:
+              - 'deploy/**'
+
+  build-images:
+    needs: check-changes
+    if: needs.check-changes.outputs.needs_build == 'true'
+    uses: ./.github/workflows/build-image.yaml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+      image_suffix: "-dev"
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+
+  functional-test:
+    needs: [check-changes, build-images]
+    if: always() && needs.check-changes.outputs.needs_test == 'true' && needs.build-images.result != 'failure'
+    runs-on: ubuntu-latest-16-cores
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          allow-unsafe-pr-checkout: true
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: functional-test
+
+      - name: Determine image refs
+        id: images
+        run: |
+          SHORT="${{ steps.sha.outputs.short }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          TAG="pr-${PR_NUM}-commit-${SHORT}"
+
+          for service in prediction-server training-server test; do
+            dev_ref="${{ env.IMAGE_BASE }}-${service}-dev:${TAG}"
+            main_ref="${{ env.IMAGE_BASE }}-${service}:main"
+
+            if docker manifest inspect "${dev_ref}" > /dev/null 2>&1; then
+              echo "${service}=${dev_ref}" >> "$GITHUB_OUTPUT"
+              echo "Using dev image for ${service}: ${dev_ref}"
+            else
+              echo "${service}=${main_ref}" >> "$GITHUB_OUTPUT"
+              echo "Using main image for ${service}: ${main_ref}"
+            fi
+          done
+
+      - name: Set images in kustomize overlays
+        run: |
+          cd deploy/overlays/ci/prediction
+          kustomize edit set image "placeholder-for-prediction-server-image=${{ steps.images.outputs.prediction-server }}"
+          cd ../training
+          kustomize edit set image "placeholder-for-training-server-image=${{ steps.images.outputs.training-server }}"
+          cd ../test
+          kustomize edit set image "placeholder-for-test-image=${{ steps.images.outputs.test }}"
+
+      - name: Deploy servers to Kind
+        id: deploy-servers
+        run: |
+          kubectl apply -k deploy/overlays/ci/prediction/
+          kubectl apply -k deploy/overlays/ci/training/
+
+      - name: Wait for servers to be ready
+        id: wait-servers
+        run: |
+          echo "Waiting for training server..."
+          kubectl rollout status deployment/training-server-deployment --timeout=120s
+
+          echo "Waiting for prediction server..."
+          kubectl rollout status deployment/prediction-server-deployment --timeout=120s
+
+      - name: Collect server logs
+        if: always() && steps.deploy-servers.outcome != 'skipped'
+        run: |
+          mkdir -p /tmp/functional-test-logs
+
+          echo "=== Training server logs ===" > /tmp/functional-test-logs/training-server.log
+          kubectl logs -l component=training >> /tmp/functional-test-logs/training-server.log 2>&1 || true
+
+          echo "=== Prediction server logs ===" > /tmp/functional-test-logs/prediction-server.log
+          kubectl logs -l component=prediction --all-containers >> /tmp/functional-test-logs/prediction-server.log 2>&1 || true
+
+      - name: Collect server debug info on failure
+        if: failure() && steps.deploy-servers.outcome != 'skipped'
+        run: |
+          kubectl describe deployment/training-server-deployment > /tmp/functional-test-logs/training-server-describe.log 2>&1 || true
+          kubectl describe deployment/prediction-server-deployment > /tmp/functional-test-logs/prediction-server-describe.log 2>&1 || true
+          kubectl get pods -o wide > /tmp/functional-test-logs/pod-status.log 2>&1 || true
+          kubectl get events --sort-by='.lastTimestamp' > /tmp/functional-test-logs/events.log 2>&1 || true
+
+      - name: Deploy functional tests
+        id: deploy-tests
+        if: steps.wait-servers.outcome == 'success'
+        run: kubectl apply -k deploy/overlays/ci/test/
+
+      - name: Wait for functional test job to complete
+        id: wait-tests
+        if: steps.deploy-tests.outcome == 'success'
+        run: |
+          echo "Waiting for functional test job to complete (timeout: 10m)..."
+          kubectl wait --for=condition=complete job/latency-predictor-functional-test --timeout=600s || {
+            echo "::error::Functional test job did not complete successfully"
+            exit 1
+          }
+
+      - name: Collect test logs
+        if: always() && steps.deploy-tests.outcome != 'skipped'
+        run: |
+          mkdir -p /tmp/functional-test-logs
+          kubectl logs -l component=functional-test > /tmp/functional-test-logs/functional-test.log 2>&1 || true
+
+      - name: Print test output
+        if: always() && steps.deploy-tests.outcome != 'skipped'
+        run: |
+          echo "=== Functional Test Output ==="
+          cat /tmp/functional-test-logs/functional-test.log || true
+
+      - name: Collect test debug info on failure
+        if: failure() && steps.deploy-tests.outcome != 'skipped'
+        run: |
+          kubectl describe job/latency-predictor-functional-test > /tmp/functional-test-logs/functional-test-describe.log 2>&1 || true
+          kubectl get pods -o wide > /tmp/functional-test-logs/pod-status.log 2>&1 || true
+          kubectl get events --sort-by='.lastTimestamp' > /tmp/functional-test-logs/events.log 2>&1 || true
+
+      - name: Write job summary
+        if: always() && steps.deploy-servers.outcome != 'skipped'
+        run: |
+          echo "## Functional Test Results" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/functional-test-logs/functional-test.log ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -100 /tmp/functional-test-logs/functional-test.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Tests did not run — server deployment failed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload logs
+        if: always() && steps.deploy-servers.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-test-logs
+          path: /tmp/functional-test-logs/
+          retention-days: 14

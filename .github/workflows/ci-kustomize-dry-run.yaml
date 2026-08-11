@@ -1,0 +1,45 @@
+name: CI - Kustomize Dry Run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/ci-kustomize-dry-run.yaml
+      - deploy/**
+
+permissions:
+  contents: read
+
+jobs:
+  kustomize-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Build and validate all deployment paths
+        run: |
+          failed=0
+
+          while IFS= read -r -d '' kustfile; do
+            kust_dir="${kustfile%/kustomization.yaml}"
+            name="${kust_dir#deploy/}"
+
+            echo ""
+            echo "========================================"
+            echo "Validating: ${name}"
+            echo "========================================"
+
+            echo "--- kustomize build ---"
+            if kustomize build "${kust_dir}" > /dev/null; then
+              echo "PASS: ${name}"
+            else
+              echo "FAIL: kustomize build failed for ${name}"
+              failed=1
+            fi
+          done < <(find deploy -name kustomization.yaml -print0 | sort -z)
+
+          exit $failed

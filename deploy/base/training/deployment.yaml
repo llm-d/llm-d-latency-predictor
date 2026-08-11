@@ -18,11 +18,9 @@ spec:
         app: training-server
         component: training
     spec:
-      nodeSelector:
-        cloud.google.com/gke-nodepool: "pool-2"
       containers:
         - name: training-server
-          image: placeholder-for-training-server-image:latest  # TODO Replace with actual image
+          image: placeholder-for-training-server-image
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -61,5 +59,4 @@ spec:
               mountPath: /models
       volumes:
         - name: model-storage
-          persistentVolumeClaim:
-            claimName: training-models-pvc
+          emptyDir: {}

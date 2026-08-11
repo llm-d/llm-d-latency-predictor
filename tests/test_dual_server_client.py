@@ -274,6 +274,8 @@ def test_add_training_data_to_training_server():
         prefix_cache = random.uniform(0.1, 0.9)
         prefill_tif = random.randint(0, 10000)
         decode_tif = random.randint(0, 3000)
+        encoder_input = random.randint(0, 5000)
+        encoder_matched = random.randint(0, encoder_input)
 
         entries.append(
             {
@@ -282,7 +284,13 @@ def test_add_training_data_to_training_server():
                 "num_request_waiting": waiting,
                 "num_request_running": running,
                 "actual_ttft_ms": (
-                    inp_len * 2.0 + waiting * 3.0 + running * 4.0 + kv * 50.0 + prefix_cache * 30.0 + prefill_tif * 0.05
+                    inp_len * 2.0
+                    + waiting * 3.0
+                    + running * 4.0
+                    + kv * 50.0
+                    + prefix_cache * 30.0
+                    + prefill_tif * 0.05
+                    + (encoder_input - encoder_matched) * 0.01
                 )
                 + 95,
                 "actual_tpot_ms": (kv * 100.0 + inp_len * 0.5 + tokens * 1.0 + running * 5.0 + decode_tif * 0.02) + 9,
@@ -290,6 +298,8 @@ def test_add_training_data_to_training_server():
                 "prefix_cache_score": prefix_cache,
                 "prefill_tokens_in_flight": prefill_tif,
                 "decode_tokens_in_flight": decode_tif,
+                "encoder_matched_size": encoder_matched,
+                "encoder_input_size": encoder_input,
             }
         )
 
@@ -344,6 +354,8 @@ def test_prediction_via_prediction_server():
         "num_request_running": 1,
         "num_tokens_generated": 4,
         "prefix_cache_score": 0.7,  # Added prefix_cache_score field
+        "encoder_matched_size": 100,
+        "encoder_input_size": 500,
     }
 
     r = requests.post(f"{PREDICTION_URL}/predict", json=features)
@@ -1214,7 +1226,7 @@ def generate_random_training_payload():
     }
 
 
-def test_dual_server_quantile_regression_learns_distribution():
+def test_dual_server_quantile_regression_learns_distribution_stress():
     """
     Quantile regression should learn the q-quantile of a Gaussian residual model
     with fixed sigma, verified by (a) relative error vs μ+zσ and (b) empirical coverage.
@@ -1410,7 +1422,7 @@ def _reload_prediction_server(max_attempts: int = 15) -> bool:
     return False
 
 
-def test_tif_features_mean_learns_equation():
+def test_tif_features_mean_learns_equation_stress():
     """
     Mean objective: verify the model learns the TIF→latency equation.
 
@@ -1544,7 +1556,7 @@ def test_tif_features_mean_learns_equation():
     print("✓ Mean model learned TIF equation: predictions increase monotonically with TIF")
 
 
-def test_tif_features_quantile_learns_distribution():
+def test_tif_features_quantile_learns_distribution_stress():
     """
     Quantile/percentile objective: verify the model learns the conditional
     distribution of latency given TIF features.
@@ -2113,7 +2125,7 @@ if __name__ == "__main__":
         ("Flush API", test_training_server_flush_api),
         ("Flush Error Handling", test_training_server_flush_error_handling),
         ("Model Export", test_model_export),
-        ("Dual Server Model Learns Equation", test_dual_server_quantile_regression_learns_distribution),
+        ("Dual Server Model Learns Equation", test_dual_server_quantile_regression_learns_distribution_stress),
         ("End-to-End Workflow", test_end_to_end_workflow),
     ]
 

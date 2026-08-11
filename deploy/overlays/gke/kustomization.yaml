@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: default
+
+resources:
+  - training
+  - prediction
+  # Uncomment to include the test job
+  # - test
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: latency-predictor

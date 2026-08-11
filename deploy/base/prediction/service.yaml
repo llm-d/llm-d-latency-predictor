@@ -6,7 +6,7 @@ metadata:
   labels:
     component: prediction
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: prediction-server
     component: prediction

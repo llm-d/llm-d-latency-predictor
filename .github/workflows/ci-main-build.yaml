@@ -1,0 +1,21 @@
+name: CI - Main Build
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - 'OWNERS'
+
+jobs:
+  build-images:
+    uses: ./.github/workflows/build-image.yaml
+    with:
+      force_build: true
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit

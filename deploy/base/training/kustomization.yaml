@@ -3,13 +3,5 @@ kind: Kustomization
 
 resources:
   - configmap.yaml
-  - storageclass.yaml
-  - pvc.yaml
   - deployment.yaml
   - service.yaml
-
-images:
-  # Replace the placeholder training server image with the actual built image
-  - name: placeholder-for-training-server-image
-    newName: us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension/latency-training-server
-    newTag: latest

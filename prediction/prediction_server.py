@@ -88,6 +88,11 @@ class PredictSettings:
     ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = (
         os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
     )
+    # On by default. NOTE: a model persisted before these columns existed will fail
+    # on feature-count mismatch until its first retrain, so when rolling this out on
+    # top of an existing deployment, flush or regenerate models (and keep this flag in
+    # sync with the training server). Set to "false" to disable.
+    ENABLE_ENCODER_FEATURES: bool = os.getenv("LATENCY_ENABLE_ENCODER_FEATURES", "true").lower() == "true"
 
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     LOCAL_TTFT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TTFT_GATED_MODEL_PATH", "/local_models/ttft_gated.joblib")
@@ -350,6 +355,15 @@ class LightweightPredictor:
             _tif = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
 
         if model_type == "ttft":
+            # Encoder columns (multimodal, TTFT-only): gated so old models without
+            # these columns keep predicting until their first retrain.
+            _enc = []
+            if settings.ENABLE_ENCODER_FEATURES:
+                for col in ("encoder_matched_size", "encoder_input_size"):
+                    if col not in df.columns:
+                        df[col] = 0
+                _enc = ["encoder_matched_size", "encoder_input_size"]
+
             df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * df["input_token_length"]
             df["prefill_score_bucket"] = (
                 (df["prefix_cache_score"].clip(0, 1) * self.prefix_buckets)
@@ -363,6 +377,7 @@ class LightweightPredictor:
             feature_cols = (
                 ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
                 + _tif
+                + _enc
                 + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
             )
             return df[feature_cols]
@@ -565,6 +580,8 @@ class LightweightPredictor:
                 "num_request_waiting": features["num_request_waiting"],
                 "num_request_running": features["num_request_running"],
                 "prefix_cache_score": features["prefix_cache_score"],
+                "encoder_matched_size": features.get("encoder_matched_size", 0),
+                "encoder_input_size": features.get("encoder_input_size", 0),
             }
             tpot_raw_data = {
                 "kv_cache_percentage": features["kv_cache_percentage"],
@@ -652,6 +669,8 @@ class LightweightPredictor:
                     "num_request_waiting": features["num_request_waiting"],
                     "num_request_running": features["num_request_running"],
                     "prefix_cache_score": features["prefix_cache_score"],
+                    "encoder_matched_size": features.get("encoder_matched_size", 0),
+                    "encoder_input_size": features.get("encoder_input_size", 0),
                 }
                 if "pod_type" in features:
                     ttft_entry["pod_type"] = features["pod_type"]
@@ -746,6 +765,9 @@ class LightweightPredictor:
             nrr = np.fromiter((r.num_request_running for r in reqs), dtype=np.float64, count=n)
             ntg = np.fromiter((r.num_tokens_generated for r in reqs), dtype=np.float64, count=n)
             pcs = np.fromiter((r.prefix_cache_score for r in reqs), dtype=np.float64, count=n)
+            if settings.ENABLE_ENCODER_FEATURES:
+                ems = np.fromiter((r.encoder_matched_size for r in reqs), dtype=np.float64, count=n)
+                eis = np.fromiter((r.encoder_input_size for r in reqs), dtype=np.float64, count=n)
             if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
                 pti = np.fromiter((r.prefill_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
                 dti = np.fromiter((r.decode_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
@@ -776,6 +798,9 @@ class LightweightPredictor:
                     "prefix_cache_score": pcs,
                 }
             )
+            if settings.ENABLE_ENCODER_FEATURES:
+                df_ttft_raw["encoder_matched_size"] = ems
+                df_ttft_raw["encoder_input_size"] = eis
             df_tpot_raw = pd.DataFrame(
                 {
                     "kv_cache_percentage": kv,
@@ -880,6 +905,8 @@ class PredictionRequest(BaseModel):
     pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
     prefill_tokens_in_flight: int = Field(default=0, ge=0)
     decode_tokens_in_flight: int = Field(default=0, ge=0)
+    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
+    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
 
 
 class PredictionResponse(BaseModel):
