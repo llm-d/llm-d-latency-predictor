@@ -1339,7 +1339,7 @@ class LatencyPredictor:
                 self.live_ttft_violations.append(1 if predicted_ttft < sample["actual_ttft_ms"] else 0)
 
             predicted_tpot = sample.get("predicted_tpot_ms")
-            if tpot_valid and isinstance(predicted_spot, int | float):
+            if tpot_valid and isinstance(predicted_tpot, int | float):
                 error = sample["actual_tpot_ms"] - predicted_tpot
                 self.live_tpot_sq_errors.append(error * error)
                 self.live_tpot_actuals.append(sample["actual_tpot_ms"])
