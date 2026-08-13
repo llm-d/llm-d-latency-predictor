@@ -35,6 +35,8 @@ from scipy.stats import norm
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 
+from training.calibration import CalibrationTrigger
+
 try:
     import xgboost as xgb
 
@@ -98,6 +100,17 @@ class Settings:
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
     TTFT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TTFT_GATED_MODEL_PATH", "/tmp/models/ttft_gated.joblib")
     TPOT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TPOT_GATED_MODEL_PATH", "/tmp/models/tpot_gated.joblib")
+
+    # Experiment C — continuous coverage evaluation + calibration-triggered retraining.
+    # When > 0, a background loop re-evaluates coverage on the current model + test
+    # buffer every COVERAGE_EVAL_INTERVAL_SEC. If the EMA of |coverage - quantile_alpha|
+    # exceeds CALIBRATION_TRIGGER_THRESHOLD for CALIBRATION_TRIGGER_K consecutive
+    # evaluations, the next retrain fires immediately instead of waiting out the
+    # full RETRAINING_INTERVAL_SEC. Set COVERAGE_EVAL_INTERVAL_SEC=0 to disable.
+    COVERAGE_EVAL_INTERVAL_SEC: int = int(os.getenv("LATENCY_COVERAGE_EVAL_INTERVAL_SEC", 0))
+    CALIBRATION_TRIGGER_THRESHOLD: float = float(os.getenv("LATENCY_CALIBRATION_TRIGGER_THRESHOLD", "5.0"))
+    CALIBRATION_TRIGGER_K: int = int(os.getenv("LATENCY_CALIBRATION_TRIGGER_K", 2))
+    CALIBRATION_EMA_ALPHA: float = float(os.getenv("LATENCY_CALIBRATION_EMA_ALPHA", "0.3"))
 
 
 settings = Settings()
@@ -272,6 +285,13 @@ class LatencyPredictor:
         self.ttft_violation_rates = deque(maxlen=5)
         self.tpot_violation_rates = deque(maxlen=5)
 
+        # Live coverage from the continuous coverage loop: evaluations of the
+        # currently loaded model between retrains. Kept separate from the
+        # per-retrain deques above so ttft/tpot_coverage_percent retain their
+        # "test coverage at the last 5 retrains" meaning.
+        self.ttft_live_coverage_scores = deque(maxlen=5)
+        self.tpot_live_coverage_scores = deque(maxlen=5)
+
         # Mean-objective metric tracking (store last 5 scores)
         self.ttft_mae_scores = deque(maxlen=5)
         self.tpot_mae_scores = deque(maxlen=5)
@@ -295,6 +315,18 @@ class LatencyPredictor:
         self.last_retrain_time = None
         self._shutdown_event = threading.Event()
         self._training_thread: threading.Thread = None
+        # Experiment C — calibration trigger. The continuous coverage loop sets
+        # this when |coverage - quantile_alpha| EMA crosses
+        # CALIBRATION_TRIGGER_THRESHOLD; the training loop checks it during its
+        # inter-retrain sleep and fires an immediate retrain rather than waiting
+        # the rest of RETRAINING_INTERVAL_SEC.
+        self._calibration_trigger = threading.Event()
+        self._coverage_eval_thread: threading.Thread | None = None
+        # Monotonic count of concluded train() calls, landed or not. The
+        # calibration detector compares it against the value captured at
+        # trigger time to notice a triggered retrain that skipped or failed
+        # (last_retrain_time unchanged) and release its pending state.
+        self._train_attempts = 0
 
     def _get_prefix_bucket(self, prefix_score: float) -> int:
         """Map prefix cache score to bucket index."""
@@ -702,6 +734,46 @@ class LatencyPredictor:
         except Exception as e:
             logging.error(f"Error in _train_model_with_scaling: {e}", exc_info=True)
             raise
+
+    def evaluate_current_coverage(self) -> tuple[float | None, float | None]:
+        """Re-evaluate coverage on the *currently loaded* model + test buffer,
+        without retraining. Appends to {ttft,tpot}_live_coverage_scores (its own
+        metric family, ttft/tpot_live_coverage_percent) so the per-retrain
+        coverage series keep their meaning. Returns (ttft_cov, tpot_cov); either
+        may be None if model/test data isn't ready. Quantile-objective only —
+        no-op under mean-objective.
+        """
+        if self.objective_type == ObjectiveType.MEAN:
+            return None, None
+        if not self.is_ready:
+            return None, None
+
+        with self.lock:
+            ttft_test = list(self.ttft_test_data)
+            tpot_test = list(self.tpot_test_data)
+            ttft_model = self.ttft_model
+            tpot_model = self.tpot_model
+            ttft_scaler = self.ttft_scaler
+            tpot_scaler = self.tpot_scaler
+
+        ttft_cov: float | None = None
+        tpot_cov: float | None = None
+
+        if ttft_test and ttft_model is not None:
+            _, cov, _ = self._calculate_metrics_on_test(ttft_model, ttft_scaler, ttft_test, "ttft", "actual_ttft_ms")
+            if cov is not None:
+                with self.lock:
+                    self.ttft_live_coverage_scores.append(cov)
+                ttft_cov = cov
+
+        if tpot_test and tpot_model is not None:
+            _, cov, _ = self._calculate_metrics_on_test(tpot_model, tpot_scaler, tpot_test, "tpot", "actual_tpot_ms")
+            if cov is not None:
+                with self.lock:
+                    self.tpot_live_coverage_scores.append(cov)
+                tpot_cov = cov
+
+        return ttft_cov, tpot_cov
 
     def _calculate_metrics_on_test(self, model, scaler, test_data, model_name, target_col):
         """Calculate metrics on test data.
@@ -1131,6 +1203,12 @@ class LatencyPredictor:
                         logging.error("Error saving models after training.", exc_info=True)
         except Exception as e:
             logging.error(f"Critical error in train(): {e}", exc_info=True)
+        finally:
+            # Counted on every exit path (landed, skipped, or failed) so the
+            # calibration detector can tell a concluded-but-unlanded triggered
+            # retrain from one still in flight.
+            with self.lock:
+                self._train_attempts += 1
 
     def predict(self, features: dict) -> tuple[float, float, float, float]:
         try:
@@ -1453,6 +1531,8 @@ class LatencyPredictor:
                     self.tpot_quantile_loss_scores.clear()
                     self.ttft_coverage_scores.clear()
                     self.tpot_coverage_scores.clear()
+                    self.ttft_live_coverage_scores.clear()
+                    self.tpot_live_coverage_scores.clear()
                     self.ttft_violation_rates.clear()
                     self.tpot_violation_rates.clear()
                     self.ttft_mae_scores.clear()
@@ -1757,6 +1837,15 @@ class LatencyPredictor:
                 for idx, coverage in enumerate(self.tpot_coverage_scores):
                     lines.append(f'tpot_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
 
+                # 5b) Live coverage from the continuous coverage loop
+                #     (evaluations of the current model between retrains).
+                #     Separate family so the per-retrain series above stay
+                #     comparable across enabled/disabled runs.
+                for idx, coverage in enumerate(self.ttft_live_coverage_scores):
+                    lines.append(f'ttft_live_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
+                for idx, coverage in enumerate(self.tpot_live_coverage_scores):
+                    lines.append(f'tpot_live_coverage_percent{{idx="{idx}"}} {coverage:.6f}')
+
                 # 6) Violation rates (should be close to (1-quantile) * 100)
                 for idx, violation_rate in enumerate(self.ttft_violation_rates):
                     lines.append(f'ttft_violation_rate_percent{{idx="{idx}"}} {violation_rate:.6f}')
@@ -1845,9 +1934,81 @@ def continuous_training_loop():
             predictor.train()
         except Exception:
             logging.error("Error in periodic retraining", exc_info=True)
-        if predictor._shutdown_event.wait(timeout=settings.RETRAINING_INTERVAL_SEC):
-            break
+
+        # Sleep the retrain interval in 1-second slices so a calibration trigger
+        # (set by continuous_coverage_loop) can short-circuit the wait. Shutdown
+        # still takes precedence.
+        slept = 0.0
+        slice_sec = 1.0
+        while slept < settings.RETRAINING_INTERVAL_SEC:
+            if predictor._shutdown_event.is_set():
+                logging.info("Training loop exiting (shutdown).")
+                return
+            if predictor._calibration_trigger.is_set():
+                predictor._calibration_trigger.clear()
+                logging.info(
+                    f"Retraining triggered by calibration deviation after {slept:.1f}s of "
+                    f"{settings.RETRAINING_INTERVAL_SEC}s scheduled interval"
+                )
+                break
+            time.sleep(slice_sec)
+            slept += slice_sec
     logging.info("Training loop exiting.")
+
+
+# --- Continuous Coverage Evaluation Loop (Experiment C) ---
+def continuous_coverage_loop():
+    """Periodically re-evaluates calibration of the currently loaded model
+    against the test buffer. Detects drift between scheduled retrains and
+    sets _calibration_trigger when an EMA of |coverage - quantile_alpha|
+    crosses CALIBRATION_TRIGGER_THRESHOLD for K consecutive evaluations.
+    No-op when COVERAGE_EVAL_INTERVAL_SEC <= 0.
+    """
+    if settings.COVERAGE_EVAL_INTERVAL_SEC <= 0:
+        logging.info("Continuous coverage evaluation disabled (COVERAGE_EVAL_INTERVAL_SEC=0).")
+        return
+
+    # Wait long enough for the first train() to populate models + initial coverage.
+    time.sleep(15)
+    target_pct = settings.QUANTILE_ALPHA * 100
+    trigger = CalibrationTrigger(
+        target_pct=target_pct,
+        threshold=settings.CALIBRATION_TRIGGER_THRESHOLD,
+        k=settings.CALIBRATION_TRIGGER_K,
+        ema_alpha=settings.CALIBRATION_EMA_ALPHA,
+    )
+
+    logging.info(
+        f"Continuous coverage loop started "
+        f"(eval_interval={settings.COVERAGE_EVAL_INTERVAL_SEC}s, "
+        f"target={target_pct:.0f}%, threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp, "
+        f"k={settings.CALIBRATION_TRIGGER_K}, ema_alpha={settings.CALIBRATION_EMA_ALPHA:.2f})"
+    )
+
+    while not predictor._shutdown_event.is_set():
+        try:
+            ttft_cov, tpot_cov = predictor.evaluate_current_coverage()
+            fired = trigger.update(
+                ttft_cov,
+                tpot_cov,
+                predictor.last_retrain_time,
+                train_attempts=predictor._train_attempts,
+            )
+            logging.info(
+                f"Coverage drift: ttft_cov={ttft_cov} tpot_cov={tpot_cov} "
+                f"max_dev={trigger.max_dev:.2f} consecutive_bad={trigger.consecutive_bad}/{settings.CALIBRATION_TRIGGER_K}"
+                f"{' (awaiting retrain)' if trigger.awaiting_retrain else ''}"
+            )
+            if fired:
+                logging.warning(
+                    f"Calibration trigger fired (max_dev={trigger.max_dev:.2f}pp > "
+                    f"threshold={settings.CALIBRATION_TRIGGER_THRESHOLD:.2f}pp). Requesting immediate retrain."
+                )
+                predictor._calibration_trigger.set()
+        except Exception:
+            logging.error("Error in continuous coverage loop", exc_info=True)
+        predictor._shutdown_event.wait(timeout=settings.COVERAGE_EVAL_INTERVAL_SEC)
+    logging.info("Continuous coverage loop exiting.")
 
 
 # --- FastAPI Events ---
@@ -1859,6 +2020,13 @@ async def startup_event():
     predictor._training_thread = t
     t.start()
     logging.info("Background training started.")
+
+    # Experiment C — start continuous coverage evaluation only when enabled.
+    if settings.COVERAGE_EVAL_INTERVAL_SEC > 0:
+        ct = threading.Thread(target=continuous_coverage_loop, daemon=True)
+        predictor._coverage_eval_thread = ct
+        ct.start()
+        logging.info("Continuous coverage evaluation thread started.")
 
 
 @app.on_event("shutdown")
