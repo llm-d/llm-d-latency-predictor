@@ -1,0 +1,21 @@
+#  - drop the GKE nodepool selector
+#  - add restricted-v2 SCC friendly security context
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-server-deployment
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: training-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

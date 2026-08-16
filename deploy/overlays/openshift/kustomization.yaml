@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: llm-d-latency-predictor
+
+resources:
+  - namespace.yaml
+  - training
+  - prediction
+  # - test
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: latency-predictor

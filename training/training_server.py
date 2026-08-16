@@ -60,6 +60,7 @@ from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDe
 def _drop_timestamp(rows: list[dict]) -> list[dict]:
     return [{k: v for k, v in row.items() if k != "timestamp"} for row in rows]
 
+
 # --- Configuration ---
 class Settings:
     """

@@ -1,0 +1,7 @@
+# Create the target namespace so the overlay is self-contained for both
+# `oc apply -k` and GitOps (Argo/Flux). The `namespace:` transformer in
+# kustomization.yaml keeps this name in sync with all namespaced resources.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-d-latency-predictor

@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-server-deployment
+spec:
+  template:
+    spec:
+      volumes:
+        - name: model-storage
+          emptyDir: null
+          persistentVolumeClaim:
+            claimName: training-models-pvc
