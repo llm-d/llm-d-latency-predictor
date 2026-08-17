@@ -1375,7 +1375,7 @@ class LatencyPredictor:
 
     @staticmethod
     def _live_nrmse_and_violation(
-        se_errors: deque, actuals: deque, violations: deque
+        sq_errors: deque, actuals: deque, violations: deque
     ) -> tuple[float, float] | tuple[None, None]:
         """Rolling NRMSE and violation rate over
         whatever is currently in the given live windows.
