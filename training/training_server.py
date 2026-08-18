@@ -1167,7 +1167,7 @@ class LatencyPredictor:
                     ttft_nrmse, ttft_violation = self._live_nrmse_and_violation(
                         self.live_ttft_sq_errors, self.live_ttft_actuals, self.live_ttft_violations
                     )
-                    if ttft_nrmse is not None:
+                    if ttft_nrmse is not None and len(self.live_ttft_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
                         self.ttft_baseline_nrmse = ttft_nrmse
                         self.ttft_baseline_violation_rate = ttft_violation
                     self.live_ttft_sq_errors.clear()
@@ -1177,7 +1177,7 @@ class LatencyPredictor:
                     tpot_nrmse, tpot_violation = self._live_nrmse_and_violation(
                         self.live_tpot_sq_errors, self.live_tpot_actuals, self.live_tpot_violations
                     )
-                    if tpot_nrmse is not None:
+                    if tpot_nrmse is not None and len(self.live_tpot_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
                         self.tpot_baseline_nrmse = tpot_nrmse
                         self.tpot_baseline_violation_rate = tpot_violation
                     self.live_tpot_sq_errors.clear()
