@@ -74,6 +74,19 @@ class Settings:
     RETRAINING_INTERVAL_SEC: int = int(os.getenv("LATENCY_RETRAINING_INTERVAL_SEC", 1800))
     MIN_SAMPLES_FOR_RETRAIN_FRESH: int = int(os.getenv("LATENCY_MIN_SAMPLES_FOR_RETRAIN_FRESH", 10))
     MIN_SAMPLES_FOR_RETRAIN: int = int(os.getenv("LATENCY_MIN_SAMPLES_FOR_RETRAIN", 1000))
+    # --- Dynamic (drift-based) retraining. Additive to RETRAINING_INTERVAL_SEC above:
+    # whichever condition is met first triggers train(). Disabling this flag restores
+    # the original fixed-interval-only behavior exactly.
+    ENABLE_DRIFT_RETRAINING: bool = os.getenv("LATENCY_ENABLE_DRIFT_RETRAINING", "true").lower() == "true"
+    DRIFT_CHECK_INTERVAL_SEC: int = int(os.getenv("LATENCY_DRIFT_CHECK_INTERVAL_SEC", 60))
+    LIVE_ERROR_WINDOW_SIZE: int = int(os.getenv("LATENCY_LIVE_ERROR_WINDOW_SIZE", 200))
+    MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK: int = int(os.getenv("LATENCY_MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK", 50))
+    # Live NRMSE must exceed baseline_nrmse * this multiplier to trigger.
+    DRIFT_NRMSE_MULTIPLIER: float = float(os.getenv("LATENCY_DRIFT_NRMSE_MULTIPLIER", "1.5"))
+    # Live violation rate must exceed baseline_violation_rate + this absolute amount to trigger.
+    DRIFT_VIOLATION_RATE_ABS_INCREASE: float = float(os.getenv("LATENCY_DRIFT_VIOLATION_RATE_ABS_INCREASE", "0.15"))
+    # Floor between any two retrains (fixed or drift-triggered) to avoid retrain storms.
+    MIN_SECONDS_BETWEEN_RETRAINS: int = int(os.getenv("LATENCY_MIN_SECONDS_BETWEEN_RETRAINS", 120))
     MAX_TRAINING_DATA_SIZE_PER_BUCKET: int = int(os.getenv("LATENCY_MAX_TRAINING_DATA_SIZE_PER_BUCKET", 500))
     TEST_TRAIN_RATIO: float = float(os.getenv("LATENCY_TEST_TRAIN_RATIO", "0.1"))  # Default 1:10 (10% test, 90% train)
     MAX_TEST_DATA_SIZE: int = int(os.getenv("LATENCY_MAX_TEST_DATA_SIZE", "1000"))  # Max test samples to keep
@@ -295,6 +308,28 @@ class LatencyPredictor:
         self.last_retrain_time = None
         self._shutdown_event = threading.Event()
         self._training_thread: threading.Thread = None
+
+        # Live prediction-error tracking for dynamic, drift-based retraining.
+        # Distinct from the ttft/tpot_{mae,rmse,quantile_loss,violation}_scores
+        # above, which are computed against the held-out *test split* only at
+        # retrain time - these are computed continuously from production
+        # traffic (any TrainingEntry that carries predicted_ttft_ms/predicted_tpot_ms).
+        self.live_ttft_sq_errors = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+        self.live_ttft_actuals = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+        self.live_ttft_violations = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+        self.live_tpot_sq_errors = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+        self.live_tpot_actuals = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+        self.live_tpot_violations = deque(maxlen=settings.LIVE_ERROR_WINDOW_SIZE)
+
+        # Baseline live NRMSE/violation rate, snapshotted from the outgoing model's
+        # live window immediately after each retrain. None until the
+        # first full model generation has completed, i.e. dynamic retraining can't
+        # fire until at least one fixed-interval retrain has happened after this
+        # feature was enabled - it has nothing to compare against yet.
+        self.ttft_baseline_nrmse = None
+        self.tpot_baseline_nrmse = None
+        self.ttft_baseline_violation_rate = None
+        self.tpot_baseline_violation_rate = None
 
     def _get_prefix_bucket(self, prefix_score: float) -> int:
         """Map prefix cache score to bucket index."""
@@ -1125,6 +1160,29 @@ class LatencyPredictor:
 
                 if self.is_ready:
                     self.last_retrain_time = datetime.now(UTC)
+                    # Snapshot the live NRMSE/violation rate accumulated against the
+                    # model generation that's about to be replaced, as the baseline
+                    # the *next* generation's live metrics will be compared to - then
+                    # clear the window so it starts fresh for the new model. 
+                    ttft_nrmse, ttft_violation = self._live_nrmse_and_violation(
+                        self.live_ttft_sq_errors, self.live_ttft_actuals, self.live_ttft_violations
+                    )
+                    if ttft_nrmse is not None and len(self.live_ttft_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
+                        self.ttft_baseline_nrmse = ttft_nrmse
+                        self.ttft_baseline_violation_rate = ttft_violation
+                    self.live_ttft_sq_errors.clear()
+                    self.live_ttft_actuals.clear()
+                    self.live_ttft_violations.clear()
+
+                    tpot_nrmse, tpot_violation = self._live_nrmse_and_violation(
+                        self.live_tpot_sq_errors, self.live_tpot_actuals, self.live_tpot_violations
+                    )
+                    if tpot_nrmse is not None and len(self.live_tpot_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
+                        self.tpot_baseline_nrmse = tpot_nrmse
+                        self.tpot_baseline_violation_rate = tpot_violation
+                    self.live_tpot_sq_errors.clear()
+                    self.live_tpot_actuals.clear()
+                    self.live_tpot_violations.clear()
                     try:
                         self._save_models_unlocked()
                     except Exception:
@@ -1269,7 +1327,23 @@ class LatencyPredictor:
             # Create subsets based on conditions
             ttft_valid = sample["actual_ttft_ms"] > 0
             tpot_valid = sample["actual_tpot_ms"] > 0
+            
+            # Live drift tracking runs on every valid sample that carries a prediction,
+            # independent of the is_test/train split above (that split is about model
+            # fitting; this is about measuring live prediction accuracy)
+            predicted_ttft = sample.get("predicted_ttft_ms")
+            if ttft_valid and isinstance(predicted_ttft, int | float):
+                error = sample["actual_ttft_ms"] - predicted_ttft
+                self.live_ttft_sq_errors.append(error * error)
+                self.live_ttft_actuals.append(sample["actual_ttft_ms"])
+                self.live_ttft_violations.append(1 if predicted_ttft < sample["actual_ttft_ms"] else 0)
 
+            predicted_tpot = sample.get("predicted_tpot_ms")
+            if tpot_valid and isinstance(predicted_tpot, int | float):
+                error = sample["actual_tpot_ms"] - predicted_tpot
+                self.live_tpot_sq_errors.append(error * error)
+                self.live_tpot_actuals.append(sample["actual_tpot_ms"])
+                self.live_tpot_violations.append(1 if predicted_tpot < sample["actual_tpot_ms"] else 0)
             if is_test:
                 # Add to test data only if the respective metric is valid
                 if ttft_valid:
@@ -1298,6 +1372,102 @@ class LatencyPredictor:
                 except Exception:
                     # log & continue on individual failures
                     logging.exception("Failed to add one sample in bulk ingestion")
+
+    @staticmethod
+    def _live_nrmse_and_violation(
+        sq_errors: deque, actuals: deque, violations: deque
+    ) -> tuple[float, float] | tuple[None, None]:
+        """Rolling NRMSE and violation rate over
+        whatever is currently in the given live windows.
+        """
+        if not sq_errors:
+            return None, None
+        mean_actual = sum(actuals) / len(actuals)
+        if mean_actual <= 0:
+            return None, None
+        rmse = (sum(sq_errors) / len(sq_errors)) ** 0.5
+        nrmse = rmse / mean_actual
+        violation_rate = sum(violations) / len(violations)
+        return nrmse, violation_rate
+
+    def get_live_drift_metrics(self) -> dict:
+        """Current live NRMSE/violation rate"""
+        with self.lock:
+            ttft_nrmse, ttft_violation = self._live_nrmse_and_violation(
+                self.live_ttft_sq_errors, self.live_ttft_actuals, self.live_ttft_violations
+            )
+            tpot_nrmse, tpot_violation = self._live_nrmse_and_violation(
+                self.live_tpot_sq_errors, self.live_tpot_actuals, self.live_tpot_violations
+            )
+            return {
+                "ttft_live_nrmse": ttft_nrmse,
+                "ttft_live_violation_rate": ttft_violation,
+                "ttft_live_sample_count": len(self.live_ttft_sq_errors),
+                "ttft_baseline_nrmse": self.ttft_baseline_nrmse,
+                "ttft_baseline_violation_rate": self.ttft_baseline_violation_rate,
+                "tpot_live_nrmse": tpot_nrmse,
+                "tpot_live_violation_rate": tpot_violation,
+                "tpot_live_sample_count": len(self.live_tpot_sq_errors),
+                "tpot_baseline_nrmse": self.tpot_baseline_nrmse,
+                "tpot_baseline_violation_rate": self.tpot_baseline_violation_rate,
+            }
+
+    def should_retrain_due_to_drift(self) -> tuple[bool, str]:
+        """Dynamic retraining trigger (issue #40): fires when live prediction error
+        has drifted meaningfully above the baseline captured at the last retrain,
+        instead of waiting on the fixed RETRAINING_INTERVAL_SEC schedule.
+        Either NRMSE drift or violation-rate drift is sufficient cause to retrain
+        """
+        if not settings.ENABLE_DRIFT_RETRAINING:
+            return False, "drift retraining disabled"
+
+        with self.lock:
+            if self.last_retrain_time is not None:
+                elapsed = (datetime.now(UTC) - self.last_retrain_time).total_seconds()
+                if elapsed < settings.MIN_SECONDS_BETWEEN_RETRAINS:
+                    return False, "cooldown"
+
+            checks = (
+                (
+                    "ttft",
+                    self.live_ttft_sq_errors,
+                    self.live_ttft_actuals,
+                    self.live_ttft_violations,
+                    self.ttft_baseline_nrmse,
+                    self.ttft_baseline_violation_rate,
+                ),
+                (
+                    "tpot",
+                    self.live_tpot_sq_errors,
+                    self.live_tpot_actuals,
+                    self.live_tpot_violations,
+                    self.tpot_baseline_nrmse,
+                    self.tpot_baseline_violation_rate,
+                ),
+            )
+            for name, sq_errors, actuals, violations, baseline_nrmse, baseline_violation in checks:
+                if len(sq_errors) < settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
+                    continue
+                # No baseline yet (no completed model generation to compare against) -
+                # let the fixed interval establish one rather than triggering blind.
+                if baseline_nrmse is None:
+                    continue
+
+                nrmse, violation_rate = self._live_nrmse_and_violation(sq_errors, actuals, violations)
+                if nrmse is None:
+                    continue
+
+                if nrmse > baseline_nrmse * settings.DRIFT_NRMSE_MULTIPLIER:
+                    return True, (
+                        f"{name} live NRMSE {nrmse:.3f} exceeds baseline {baseline_nrmse:.3f} "
+                        f"x {settings.DRIFT_NRMSE_MULTIPLIER:.2f}"
+                    )
+                if violation_rate > baseline_violation + settings.DRIFT_VIOLATION_RATE_ABS_INCREASE:
+                    return True, (
+                        f"{name} live violation rate {violation_rate:.2%} exceeds baseline "
+                        f"{baseline_violation:.2%} + {settings.DRIFT_VIOLATION_RATE_ABS_INCREASE:.2%}"
+                    )
+        return False, "no drift"
 
     # Update the _save_models_unlocked method to handle LightGBM model exports
     def _save_models_unlocked(self):
@@ -1769,6 +1939,24 @@ class LatencyPredictor:
                 lines.append(f"target_coverage_percent{{}} {target_coverage:.1f}")
                 lines.append(f"target_violation_rate_percent{{}} {target_violation_rate:.1f}")
 
+                # 8) Live drift metrics (issue #40) - production prediction error
+                drift = self.get_live_drift_metrics()
+                for metric_name, dict_key in (
+                        ("ttft_live_nrmse", "ttft_live_nrmse"),
+                        ("ttft_live_violation_rate", "ttft_live_violation_rate"),
+                        ("ttft_baseline_nrmse", "ttft_baseline_nrmse"),
+                        ("ttft_baseline_violation_rate", "ttft_baseline_violation_rate"),
+                        ("tpot_live_nrmse", "tpot_live_nrmse"),
+                        ("tpot_live_violation_rate", "tpot_live_violation_rate"),
+                        ("tpot_baseline_nrmse", "tpot_baseline_nrmse"),
+                        ("tpot_baseline_violation_rate", "tpot_baseline_violation_rate"),
+                ):
+                    value = drift[dict_key]
+                    if value is not None:
+                        lines.append(f"{metric_name}{{}} {value:.6f}")
+                lines.append(f"ttft_live_sample_count{{}} {drift['ttft_live_sample_count']}")
+                lines.append(f"tpot_live_sample_count{{}} {drift['tpot_live_sample_count']}")
+
             return "\n".join(lines) + "\n"
 
         except Exception as e:
@@ -1793,6 +1981,9 @@ class TrainingEntry(BaseModel):
     num_request_running: int = Field(..., ge=0)
     actual_ttft_ms: float = Field(..., ge=0.0)
     actual_tpot_ms: float = Field(..., ge=0.0)
+    # Optional: predicted_ttft_ms , predicted_tpot_ms
+    predicted_ttft_ms: float | None = Field(default=None, ge=0.0)
+    predicted_tpot_ms: float | None = Field(default=None, ge=0.0)
     num_tokens_generated: int = Field(..., ge=0)
     prefix_cache_score: float = Field(..., ge=0.0, le=1.0, description="Prefix cache hit ratio score (0.0 to 1.0)")
     pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
@@ -1838,14 +2029,27 @@ class BulkTrainingRequest(BaseModel):
 
 # --- Background Training Loop ---
 def continuous_training_loop():
+    """Retrains on whichever comes first: the fixed RETRAINING_INTERVAL_SEC schedule
+    (unchanged default behavior), or a live drift trigger (issue #40) - if
+    ENABLE_DRIFT_RETRAINING is false this behaves exactly as before, just polling
+    at DRIFT_CHECK_INTERVAL_SEC granularity instead of RETRAINING_INTERVAL_SEC.
+    """
     time.sleep(10)
+    last_retrain_check = time.monotonic()
     while not predictor._shutdown_event.is_set():
         try:
-            logging.debug("Checking if training should run...")
-            predictor.train()
+            triggered, reason = predictor.should_retrain_due_to_drift()
+            if triggered:
+                logging.info(f"Dynamic retrain triggered: {reason}")
+                predictor.train()
+                last_retrain_check = time.monotonic()
+            elif time.monotonic() - last_retrain_check >= settings.RETRAINING_INTERVAL_SEC:
+                logging.debug("Checking if training should run (fixed interval)...")
+                predictor.train()
+                last_retrain_check = time.monotonic()
         except Exception:
             logging.error("Error in periodic retraining", exc_info=True)
-        if predictor._shutdown_event.wait(timeout=settings.RETRAINING_INTERVAL_SEC):
+        if predictor._shutdown_event.wait(timeout=settings.DRIFT_CHECK_INTERVAL_SEC):
             break
     logging.info("Training loop exiting.")
 
