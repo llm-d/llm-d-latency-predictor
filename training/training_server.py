@@ -56,9 +56,9 @@ except (ImportError, OSError) as e:
 from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque
 
 
-@staticmethod
 def _drop_timestamp(rows: list[dict]) -> list[dict]:
     return [{k: v for k, v in row.items() if k != "timestamp"} for row in rows]
+
 
 # --- Configuration ---
 class Settings:
@@ -711,7 +711,7 @@ class LatencyPredictor:
         Returns (None, None, None) on failure.
         """
         try:
-            clean_metrics = self._drop_timestamp(test_data)
+            clean_metrics = _drop_timestamp(test_data)
             df_raw = pd.DataFrame(clean_metrics).dropna()
             df_raw = df_raw[df_raw[target_col] > 0]
 
@@ -856,7 +856,7 @@ class LatencyPredictor:
 
             # Train TTFT
             if ttft_snap:
-                clean_ttft = self._drop_timestamp(ttft_snap)
+                clean_ttft = _drop_timestamp(ttft_snap)
                 raw_ttft = pd.DataFrame(clean_ttft).dropna()
                 raw_ttft = raw_ttft[raw_ttft["actual_ttft_ms"] > 0]
                 df_ttft = self._prepare_features_with_interaction(raw_ttft.copy(), model_type="ttft")
@@ -965,7 +965,7 @@ class LatencyPredictor:
 
             # Train TPOT
             if tpot_snap:
-                clean_tpot = self._drop_timestamp(tpot_snap)
+                clean_tpot = _drop_timestamp(tpot_snap)
                 df_tpot = pd.DataFrame(clean_tpot).dropna()
                 df_tpot = df_tpot[df_tpot["actual_tpot_ms"] > 0]
                 if settings.TPOT_ZERO_TOKEN_COUNT:
@@ -1043,7 +1043,7 @@ class LatencyPredictor:
                             ("tpot_queued", tpot_queued, "tpot", "actual_tpot_ms", "queued"),
                         ]:
                             try:
-                                clean = self._drop_timestamp(samples)
+                                clean = _drop_timestamp(samples)
                                 raw = pd.DataFrame(clean).dropna()
                                 raw = raw[raw[target_col] > 0]
                                 X = self._prepare_features_for_ensemble(raw.copy(), model_name, regime)
