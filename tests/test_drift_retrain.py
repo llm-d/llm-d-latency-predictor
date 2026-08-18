@@ -106,7 +106,7 @@ def test_no_trigger_without_baseline():
     triggered, reason = p.should_retrain_due_to_drift()
     assert triggered is False
     assert "baseline" not in reason  # falls through to "no drift", not a baseline-specific message
-    assert p.get_live_drift_metrics()["ttft_live_nrmse"] is not None  # window did accumulate
+    assert p.get_live_drift_metrics()["ttft_live_nrmse"] is not None
 
 
 def test_synthetic_drift_triggers_retrain():
@@ -208,4 +208,92 @@ def test_violation_rate_alone_can_trigger():
     triggered, reason = p.should_retrain_due_to_drift()
     assert triggered is True
     assert "violation rate" in reason
+
+def test_baseline_not_overwritten_below_sample_floor():
+    """A retrain during a quiet period (live window below the floor) must not
+    overwrite an existing baseline with a noisy few-sample snapshot - the prior
+    baseline carries over, while the window still resets for the new generation."""
+    p = make_predictor()
+    p.ttft_baseline_nrmse = 0.05
+    p.ttft_baseline_violation_rate = 0.10
+
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK - 1, actual_ttft=100.0, predicted_ttft=10.0)
+    p._snapshot_baseline_if_enough_samples("ttft")
+
+    assert p.ttft_baseline_nrmse == 0.05
+    assert p.ttft_baseline_violation_rate == 0.10
+    assert len(p.live_ttft_sq_errors) == 0
+
+
+def test_baseline_overwritten_at_sample_floor():
+    """Sanity check the opposite boundary: exactly MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK
+    samples is enough to trust a new baseline snapshot."""
+    p = make_predictor()
+    p.ttft_baseline_nrmse = 0.05
+
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK, actual_ttft=100.0, predicted_ttft=98.0)
+    p._snapshot_baseline_if_enough_samples("ttft")
+
+    assert p.ttft_baseline_nrmse != 0.05
+    assert len(p.live_ttft_sq_errors) == 0
+
+def test_tpot_drift_triggers_independently_of_ttft():
+    p = make_predictor()
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK,
+         actual_ttft=100.0, predicted_ttft=98.0, actual_tpot=20.0, predicted_tpot=19.5)
+    ttft_nrmse, ttft_violation = LatencyPredictor._live_nrmse_and_violation(
+        p.live_ttft_sq_errors, p.live_ttft_actuals, p.live_ttft_violations)
+    tpot_nrmse, tpot_violation = LatencyPredictor._live_nrmse_and_violation(
+        p.live_tpot_sq_errors, p.live_tpot_actuals, p.live_tpot_violations)
+    p.ttft_baseline_nrmse, p.ttft_baseline_violation_rate = ttft_nrmse, ttft_violation
+    p.tpot_baseline_nrmse, p.tpot_baseline_violation_rate = tpot_nrmse, tpot_violation
+    p.live_ttft_sq_errors.clear(); p.live_ttft_actuals.clear(); p.live_ttft_violations.clear()
+    p.live_tpot_sq_errors.clear(); p.live_tpot_actuals.clear(); p.live_tpot_violations.clear()
+
+    from datetime import UTC, datetime, timedelta
+    p.last_retrain_time = datetime.now(UTC) - timedelta(seconds=settings.MIN_SECONDS_BETWEEN_RETRAINS + 1)
+
+    # ttft stays close to baseline; tpot degrades severely.
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK,
+         actual_ttft=100.0, predicted_ttft=97.5, actual_tpot=20.0, predicted_tpot=4.0)
+
+    triggered, reason = p.should_retrain_due_to_drift()
+    assert triggered is True
+    assert "tpot" in reason
+
+def test_no_trigger_with_baseline_but_insufficient_live_samples():
+    """Baseline exists from a prior retrain, but the current window hasn't
+    reached MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK yet - must not trigger even with
+    severe drift in the few samples collected so far."""
+    p = make_predictor()
+    p.ttft_baseline_nrmse = 0.02
+    p.ttft_baseline_violation_rate = 0.10
+    from datetime import UTC, datetime, timedelta
+    p.last_retrain_time = datetime.now(UTC) - timedelta(seconds=settings.MIN_SECONDS_BETWEEN_RETRAINS + 1)
+
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK - 1, actual_ttft=500.0, predicted_ttft=10.0)
+
+    triggered, _ = p.should_retrain_due_to_drift()
+    assert triggered is False
+
+def test_disabled_flag_short_circuits(monkeypatch):
+    p = make_predictor()
+    p.ttft_baseline_nrmse = 0.01
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK + 10, actual_ttft=1000.0, predicted_ttft=1.0)
+    monkeypatch.setattr(settings, "ENABLE_DRIFT_RETRAINING", False)
+
+    triggered, reason = p.should_retrain_due_to_drift()
+    assert triggered is False
+    assert reason == "drift retraining disabled"
+
+def test_get_live_drift_metrics_is_read_only():
+    p = make_predictor()
+    feed(p, settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK, actual_ttft=100.0, predicted_ttft=90.0)
+
+    first = p.get_live_drift_metrics()
+    second = p.get_live_drift_metrics()
+
+    assert first == second
+    assert len(p.live_ttft_sq_errors) == settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK
+    assert p.ttft_baseline_nrmse is None
 
