@@ -1,0 +1,8 @@
+# trace_recorder.py is stdlib-only; these are for offline_feature_ab.py
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.1
+xgboost>=2.0
+pyyaml>=6.0            # for embedding workload-spec.yaml in summary.md
+lightgbm>=4.0          # for --model-type lightgbm
+shap>=0.43             # optional, for --shap flag
