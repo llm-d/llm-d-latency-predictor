@@ -831,6 +831,22 @@ class LatencyPredictor:
             logging.error(f"Error calculating metrics: {e}", exc_info=True)
             return None, None, None
 
+    def _snapshot_baseline_if_enough_samples(self, name: str) -> None:
+        """Snapshot the live NRMSE/violation rate accumulated against the model
+        generation about to be replaced, as the baseline the *next* generation's
+        live metrics will be compared to - then clear the window so it starts
+        fresh for the new model."""
+        sq_errors = getattr(self, f"live_{name}_sq_errors")
+        actuals = getattr(self, f"live_{name}_actuals")
+        violations = getattr(self, f"live_{name}_violations")
+        nrmse, violation = self._live_nrmse_and_violation(sq_errors, actuals, violations)
+        if nrmse is not None and len(sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
+            setattr(self, f"{name}_baseline_nrmse", nrmse)
+            setattr(self, f"{name}_baseline_violation_rate", violation)
+        sq_errors.clear()
+        actuals.clear()
+        violations.clear()
+
     def _create_default_model(self, model_type: str) -> tuple[BayesianRidge, StandardScaler] | (
         xgb.XGBRegressor | lgb.LGBMRegressor
     ):
@@ -1160,29 +1176,8 @@ class LatencyPredictor:
 
                 if self.is_ready:
                     self.last_retrain_time = datetime.now(UTC)
-                    # Snapshot the live NRMSE/violation rate accumulated against the
-                    # model generation that's about to be replaced, as the baseline
-                    # the *next* generation's live metrics will be compared to - then
-                    # clear the window so it starts fresh for the new model. 
-                    ttft_nrmse, ttft_violation = self._live_nrmse_and_violation(
-                        self.live_ttft_sq_errors, self.live_ttft_actuals, self.live_ttft_violations
-                    )
-                    if ttft_nrmse is not None and len(self.live_ttft_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
-                        self.ttft_baseline_nrmse = ttft_nrmse
-                        self.ttft_baseline_violation_rate = ttft_violation
-                    self.live_ttft_sq_errors.clear()
-                    self.live_ttft_actuals.clear()
-                    self.live_ttft_violations.clear()
-
-                    tpot_nrmse, tpot_violation = self._live_nrmse_and_violation(
-                        self.live_tpot_sq_errors, self.live_tpot_actuals, self.live_tpot_violations
-                    )
-                    if tpot_nrmse is not None and len(self.live_tpot_sq_errors) >= settings.MIN_LIVE_SAMPLES_FOR_DRIFT_CHECK:
-                        self.tpot_baseline_nrmse = tpot_nrmse
-                        self.tpot_baseline_violation_rate = tpot_violation
-                    self.live_tpot_sq_errors.clear()
-                    self.live_tpot_actuals.clear()
-                    self.live_tpot_violations.clear()
+                    self._snapshot_baseline_if_enough_samples("ttft")
+                    self._snapshot_baseline_if_enough_samples("tpot")
                     try:
                         self._save_models_unlocked()
                     except Exception:
