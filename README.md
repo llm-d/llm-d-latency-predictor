@@ -76,6 +76,13 @@ uvicorn prediction.prediction_server:app --port 8001
 uvicorn training.training_server:app --port 8000
 ```
 
+The training server removes ingestion timestamps before fitting TTFT and TPOT
+models. Run the isolated regression without either server running:
+
+```bash
+python -m pytest tests/test_training.py
+```
+
 ## Architecture
 
 <!-- TODO: Add architecture overview, diagrams, or links to design docs -->
