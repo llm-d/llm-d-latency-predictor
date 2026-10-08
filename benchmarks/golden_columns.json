@@ -1,0 +1,28 @@
+{
+  "ttft": [
+    "is_queued",
+    "kv_cache_percentage",
+    "input_token_length",
+    "num_request_waiting",
+    "num_request_running",
+    "prefill_tokens_in_flight",
+    "decode_tokens_in_flight",
+    "encoder_matched_size",
+    "encoder_input_size",
+    "prefix_cache_score",
+    "effective_input_tokens",
+    "prefill_score_bucket",
+    "pod_type_cat"
+  ],
+  "tpot": [
+    "is_queued",
+    "kv_cache_percentage",
+    "input_token_length",
+    "num_request_waiting",
+    "num_request_running",
+    "prefill_tokens_in_flight",
+    "decode_tokens_in_flight",
+    "num_tokens_generated",
+    "pod_type_cat"
+  ]
+}
