@@ -37,4 +37,10 @@ RUN mkdir -p /models && chmod 777 /models
 
 EXPOSE 8000
 
+# Optional TLS — set SSL_KEYFILE and SSL_CERTFILE (and optionally SSL_CA_CERTS) to enable HTTPS.
+# Mount certificate files as a Kubernetes volume and point these env vars at the mount path.
+ENV SSL_KEYFILE=""
+ENV SSL_CERTFILE=""
+ENV SSL_CA_CERTS=""
+
 CMD ["uvicorn", "training.training_server:app", "--host", "0.0.0.0", "--port", "8000"]

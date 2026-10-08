@@ -84,6 +84,12 @@ class PredictSettings:
     HTTP_TIMEOUT: int = int(os.getenv("HTTP_TIMEOUT", "30"))
     DOWNLOAD_RETRIES: int = int(os.getenv("DOWNLOAD_RETRIES", "3"))
 
+    # TLS configuration — optional, both SSL_KEYFILE and SSL_CERTFILE must be set to enable HTTPS.
+    # Mount certificate files as a Kubernetes volume and set these env vars accordingly.
+    SSL_KEYFILE: str | None = os.getenv("SSL_KEYFILE")
+    SSL_CERTFILE: str | None = os.getenv("SSL_CERTFILE")
+    SSL_CA_CERTS: str | None = os.getenv("SSL_CA_CERTS")
+
     ENSEMBLE_MODE: bool = os.getenv("LATENCY_ENSEMBLE_MODE", "true").lower() == "true"
     ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = (
         os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
@@ -1206,4 +1212,11 @@ async def shutdown():
 
 
 if __name__ == "__main__":
-    uvicorn.run("__main__:app", host=settings.HOST, port=settings.PORT, reload=True)
+    uvicorn_kwargs: dict = {"host": settings.HOST, "port": settings.PORT, "reload": True}
+    if settings.SSL_KEYFILE and settings.SSL_CERTFILE:
+        uvicorn_kwargs.update({
+            "ssl_keyfile": settings.SSL_KEYFILE,
+            "ssl_certfile": settings.SSL_CERTFILE,
+            "ssl_ca_certs": settings.SSL_CA_CERTS,
+        })
+    uvicorn.run("__main__:app", **uvicorn_kwargs)

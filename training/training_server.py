@@ -100,6 +100,12 @@ class Settings:
     TTFT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TTFT_GATED_MODEL_PATH", "/tmp/models/ttft_gated.joblib")
     TPOT_GATED_MODEL_PATH: str = os.getenv("LATENCY_TPOT_GATED_MODEL_PATH", "/tmp/models/tpot_gated.joblib")
 
+    # TLS configuration — optional, both SSL_KEYFILE and SSL_CERTFILE must be set to enable HTTPS.
+    # Mount certificate files as a Kubernetes volume and set these env vars accordingly.
+    SSL_KEYFILE: str | None = os.getenv("SSL_KEYFILE")
+    SSL_CERTFILE: str | None = os.getenv("SSL_CERTFILE")
+    SSL_CA_CERTS: str | None = os.getenv("SSL_CA_CERTS")
+
 
 settings = Settings()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -2409,4 +2415,11 @@ async def prefix_distribution():
 
 
 if __name__ == "__main__":
-    uvicorn.run("__main__:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn_kwargs: dict = {"host": "0.0.0.0", "port": 8000, "reload": True}
+    if settings.SSL_KEYFILE and settings.SSL_CERTFILE:
+        uvicorn_kwargs.update({
+            "ssl_keyfile": settings.SSL_KEYFILE,
+            "ssl_certfile": settings.SSL_CERTFILE,
+            "ssl_ca_certs": settings.SSL_CA_CERTS,
+        })
+    uvicorn.run("__main__:app", **uvicorn_kwargs)

@@ -39,4 +39,10 @@ EXPOSE 8001
 # Number of worker processes — configurable via env var
 ENV UVICORN_WORKERS=8
 
+# Optional TLS — set SSL_KEYFILE and SSL_CERTFILE (and optionally SSL_CA_CERTS) to enable HTTPS.
+# Mount certificate files as a Kubernetes volume and point these env vars at the mount path.
+ENV SSL_KEYFILE=""
+ENV SSL_CERTFILE=""
+ENV SSL_CA_CERTS=""
+
 CMD ["sh", "-c", "uvicorn prediction.prediction_server:app --host 0.0.0.0 --port 8001 --workers $UVICORN_WORKERS"]
