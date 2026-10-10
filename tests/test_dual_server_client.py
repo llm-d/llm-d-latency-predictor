@@ -1307,6 +1307,10 @@ def test_dual_server_quantile_regression_learns_distribution_stress():
 
     # 4) Wait for training to complete
     time.sleep(30)
+    training_status = requests.get(f"{TRAINING_URL}/data/status", timeout=10)
+    assert training_status.status_code == 200, "training status endpoint failed"
+    assert training_status.json().get("last_retrain") is not None, "training did not complete"
+
     # 5) Sync models to prediction server
     synced = False
     for _ in range(10):
