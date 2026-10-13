@@ -21,7 +21,7 @@ import random
 import tarfile
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import UTC, datetime
 
 import joblib
@@ -208,6 +208,11 @@ def _get_model_paths():
     }
 
 
+# Stages of a retrain that can fail independently. Each is caught and logged so the
+# server keeps serving its previous model; failures are counted per stage instead.
+TRAINING_FAILURE_STAGES = ("ttft", "tpot", "ensemble_submodel", "ensemble", "save", "train")
+
+
 class LatencyPredictor:
     """
     Manages model training, prediction, and data handling.
@@ -293,8 +298,20 @@ class LatencyPredictor:
 
         self.lock = threading.Lock()
         self.last_retrain_time = None
+        # Set only when a retrain produced a fresh model, recorded no failures in any stage,
+        # and saved cleanly. last_retrain_time also advances after a partial failure.
+        self.last_successful_retrain_time: datetime | None = None
+        self.training_failures: Counter[str] = Counter()
+        self.last_training_error: str | None = None
+        self.last_training_failure_time: datetime | None = None
         self._shutdown_event = threading.Event()
         self._training_thread: threading.Thread = None
+
+    def _record_training_failure(self, stage: str, exc: BaseException) -> None:
+        """Count a caught retrain failure so it shows up in /metrics and /data/status."""
+        self.training_failures[stage] += 1
+        self.last_training_error = f"{stage}: {type(exc).__name__}: {exc}"
+        self.last_training_failure_time = datetime.now(UTC)
 
     def _get_prefix_bucket(self, prefix_score: float) -> int:
         """Map prefix cache score to bucket index."""
@@ -851,6 +868,7 @@ class LatencyPredictor:
                     f"Initiating training with {total} samples using {self.model_type} for quantile {self.quantile}."
                 )
 
+            failures_before = self.training_failures.total()
             new_ttft_model = new_ttft_scaler = None
             new_tpot_model = new_tpot_scaler = None
 
@@ -960,8 +978,9 @@ class LatencyPredictor:
                                 f"TTFT model trained on {len(df_ttft)} samples. Metrics = N/A (insufficient test data)"
                             )
 
-                    except Exception:
+                    except Exception as e:
                         logging.error("Error training TTFT model", exc_info=True)
+                        self._record_training_failure("ttft", e)
 
             # Train TPOT
             if tpot_snap:
@@ -1009,8 +1028,9 @@ class LatencyPredictor:
                                 f"TPOT model trained on {len(df_tpot)} samples. Metrics = N/A (insufficient test data)"
                             )
 
-                    except Exception:
+                    except Exception as e:
                         logging.error("Error training TPOT model", exc_info=True)
+                        self._record_training_failure("tpot", e)
                 else:
                     logging.warning("Not enough TPOT samples, skipping TPOT training.")
 
@@ -1057,8 +1077,9 @@ class LatencyPredictor:
                                 else:
                                     sub_models[key] = (result, None)
                                 logging.info(f"{key} model trained on {len(raw)} samples")
-                            except Exception:
+                            except Exception as e:
                                 logging.error(f"Error training {key} model", exc_info=True)
+                                self._record_training_failure("ensemble_submodel", e)
 
                         # Build gated wrappers only if all 4 sub-models trained
                         if len(sub_models) == 4:
@@ -1081,8 +1102,9 @@ class LatencyPredictor:
                             )
                     else:
                         logging.info("Insufficient samples for ensemble split, using single model only")
-                except Exception:
+                except Exception as e:
                     logging.error("Error in ensemble training block", exc_info=True)
+                    self._record_training_failure("ensemble", e)
 
             with self.lock:
                 if new_ttft_model:
@@ -1127,10 +1149,17 @@ class LatencyPredictor:
                     self.last_retrain_time = datetime.now(UTC)
                     try:
                         self._save_models_unlocked()
-                    except Exception:
+                    except Exception as e:
                         logging.error("Error saving models after training.", exc_info=True)
+                        self._record_training_failure("save", e)
+
+                    # A model skipped for too few samples is not a failure: TPOT only collects
+                    # samples with actual_tpot_ms > 0, so TTFT routinely retrains alone.
+                    if (new_ttft_model or new_tpot_model) and self.training_failures.total() == failures_before:
+                        self.last_successful_retrain_time = datetime.now(UTC)
         except Exception as e:
             logging.error(f"Critical error in train(): {e}", exc_info=True)
+            self._record_training_failure("train", e)
 
     def predict(self, features: dict) -> tuple[float, float, float, float]:
         try:
@@ -1401,6 +1430,7 @@ class LatencyPredictor:
 
         except Exception as e:
             logging.error(f"Error saving models: {e}", exc_info=True)
+            self._record_training_failure("save", e)
 
     def flush_training_data(
         self, flush_training: bool = True, flush_test: bool = True, flush_metrics: bool = True, reason: str = None
@@ -1532,6 +1562,14 @@ class LatencyPredictor:
             lines.append(f"model_quantile{{}} {self.quantile}")
             lines.append(f"ensemble_active{{}} {1 if self.ensemble_active else 0}")
             lines.append(f"ensemble_mode{{}} {1 if settings.ENSEMBLE_MODE else 0}")
+
+            # Retrain health: every stage is emitted (0 until it fails) so the series exist up front
+            for stage in TRAINING_FAILURE_STAGES:
+                lines.append(f'training_failures_total{{stage="{stage}"}} {self.training_failures[stage]}')
+            last_success = self.last_successful_retrain_time
+            lines.append(
+                f"training_last_success_timestamp_seconds{{}} {last_success.timestamp() if last_success else 0}"
+            )
 
             # Helper: emit linear‐model coefs or tree importances
             def emit_metrics(model, coefficients, feats, prefix):
@@ -2103,6 +2141,14 @@ async def get_data_status():
         "bucket_distribution": bucket_distribution,
         "model_ready": predictor.is_ready,
         "last_retrain": predictor.last_retrain_time.isoformat() if predictor.last_retrain_time else None,
+        "last_successful_retrain": (
+            predictor.last_successful_retrain_time.isoformat() if predictor.last_successful_retrain_time else None
+        ),
+        "training_failures": {stage: predictor.training_failures[stage] for stage in TRAINING_FAILURE_STAGES},
+        "last_training_error": predictor.last_training_error,
+        "last_training_failure": (
+            predictor.last_training_failure_time.isoformat() if predictor.last_training_failure_time else None
+        ),
     }
 
 
