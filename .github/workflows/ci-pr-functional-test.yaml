@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload logs
         if: always() && steps.deploy-servers.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: functional-test-logs
           path: /tmp/functional-test-logs/
