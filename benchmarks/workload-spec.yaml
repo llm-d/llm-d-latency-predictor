@@ -1,0 +1,37 @@
+# Named workload specification — feature validation runs.
+# Fill in the fields below to document how a trace was captured.
+# The offline A/B pipeline embeds this spec into summary.md for
+# reproducibility.
+workload:
+  name: <workload-name>           # e.g. sharegpt-llama3-a100
+  trace_type: real                # "real" (recorded from live deployment) or "synthetic"
+  data_source: <dataset>          # e.g. ShareGPT, MMLU, custom
+  model: <model-name>             # e.g. meta-llama/Llama-3-8B
+  hardware:
+    gpu: <gpu-type>               # e.g. NVIDIA A100 (80GB)
+    gpus_per_replica: 1
+    decode_replicas: 2
+    platform: <platform>          # e.g. Kubernetes v1.31
+  serving:
+    stack: llm-d modelservice (EPP + latency predictor sidecars + vLLM)
+    epp_plugins: <plugin-chain>   # e.g. predicted-latency-slo-plugins
+    max_model_len: 16384
+    prefix_caching: disabled
+  load:
+    generator: <load-generator>   # e.g. inference-perf, locust, vegeta
+    profile: <profile-name>       # e.g. chatbot, coding, summarization
+    api: completion (streaming)
+    data:
+      type: <dataset-type>        # e.g. shareGPT, random, custom
+      input_tokens: {min: 10, max: 1024}
+      output_tokens: {min: 10, max: 1024}
+    stages:
+      - {rate_qps: 2, duration_s: 120}
+      - {rate_qps: 4, duration_s: 120}
+      - {rate_qps: 8, duration_s: 120}
+      - {rate_qps: 12, duration_s: 120}
+      - {rate_qps: 16, duration_s: 120}
+  analysis:
+    seeds: 10
+    split: 90/10 train/test per seed
+    contention_gate_min_pct: 20   # % samples with num_request_running > 1
