@@ -12,3 +12,5 @@ ND = "ND"
 
 # Add repo-specific false positives here:
 # word = "word"
+# encoder_input_size variable abbreviation used in prediction_server.py
+eis = "eis"
