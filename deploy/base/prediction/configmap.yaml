@@ -5,14 +5,11 @@ metadata:
   name: prediction-server-config
 data:
   MODEL_SYNC_INTERVAL_SEC: "10"  # Download models every 10 seconds
+  LOCAL_MODEL_DIR: "/local_models"
   LATENCY_MODEL_TYPE: "xgboost"
   PREDICT_HOST: "0.0.0.0"
   PREDICT_PORT: "8001"
   # NOTE: if you set a namePrefix in an overlay, update this URL to match the
   # prefixed training Service name (kustomize does not rewrite string values).
   TRAINING_SERVER_URL: "http://training-service:8000"
-  LOCAL_TTFT_MODEL_PATH: "/local_models/ttft.joblib"
-  LOCAL_TPOT_MODEL_PATH: "/local_models/tpot.joblib"
-  LOCAL_TTFT_SCALER_PATH: "/local_models/ttft_scaler.joblib"
-  LOCAL_TPOT_SCALER_PATH: "/local_models/tpot_scaler.joblib"
   HTTP_TIMEOUT: "30"

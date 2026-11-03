@@ -67,10 +67,15 @@ class PredictSettings:
 
     TRAINING_SERVER_URL: str = os.getenv("TRAINING_SERVER_URL", "http://training-service:8000")
 
-    LOCAL_TTFT_MODEL_PATH: str = os.getenv("LOCAL_TTFT_MODEL_PATH", "/local_models/ttft.joblib")
-    LOCAL_TPOT_MODEL_PATH: str = os.getenv("LOCAL_TPOT_MODEL_PATH", "/local_models/tpot.joblib")
-    LOCAL_TTFT_SCALER_PATH: str = os.getenv("LOCAL_TTFT_SCALER_PATH", "/local_models/ttft_scaler.joblib")
-    LOCAL_TPOT_SCALER_PATH: str = os.getenv("LOCAL_TPOT_SCALER_PATH", "/local_models/tpot_scaler.joblib")
+    LOCAL_MODEL_DIR: str = os.getenv("LOCAL_MODEL_DIR", "/local_models")
+    LOCAL_TTFT_MODEL_PATH: str = os.getenv("LOCAL_TTFT_MODEL_PATH", os.path.join(LOCAL_MODEL_DIR, "ttft.joblib"))
+    LOCAL_TPOT_MODEL_PATH: str = os.getenv("LOCAL_TPOT_MODEL_PATH", os.path.join(LOCAL_MODEL_DIR, "tpot.joblib"))
+    LOCAL_TTFT_SCALER_PATH: str = os.getenv(
+        "LOCAL_TTFT_SCALER_PATH", os.path.join(LOCAL_MODEL_DIR, "ttft_scaler.joblib")
+    )
+    LOCAL_TPOT_SCALER_PATH: str = os.getenv(
+        "LOCAL_TPOT_SCALER_PATH", os.path.join(LOCAL_MODEL_DIR, "tpot_scaler.joblib")
+    )
 
     MODEL_SYNC_INTERVAL_SEC: int = int(os.getenv("MODEL_SYNC_INTERVAL_SEC", "10"))
     MODEL_TYPE: ModelType = ModelType(os.getenv("LATENCY_MODEL_TYPE", "xgboost"))
@@ -95,8 +100,12 @@ class PredictSettings:
     ENABLE_ENCODER_FEATURES: bool = os.getenv("LATENCY_ENABLE_ENCODER_FEATURES", "true").lower() == "true"
 
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
-    LOCAL_TTFT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TTFT_GATED_MODEL_PATH", "/local_models/ttft_gated.joblib")
-    LOCAL_TPOT_GATED_MODEL_PATH: str = os.getenv("LOCAL_TPOT_GATED_MODEL_PATH", "/local_models/tpot_gated.joblib")
+    LOCAL_TTFT_GATED_MODEL_PATH: str = os.getenv(
+        "LOCAL_TTFT_GATED_MODEL_PATH", os.path.join(LOCAL_MODEL_DIR, "ttft_gated.joblib")
+    )
+    LOCAL_TPOT_GATED_MODEL_PATH: str = os.getenv(
+        "LOCAL_TPOT_GATED_MODEL_PATH", os.path.join(LOCAL_MODEL_DIR, "tpot_gated.joblib")
+    )
 
 
 settings = PredictSettings()
@@ -881,7 +890,9 @@ class LightweightPredictor:
 # ---------------------------------------------------------------------------
 # Instantiate singletons (each uvicorn worker fork gets its own copy)
 # ---------------------------------------------------------------------------
-model_syncer = ModelSyncer()
+# The syncer creates the local model directories and opens an HTTP session, so it
+# must not be instantiated while this module is imported by tooling or tests.
+model_syncer: ModelSyncer | None = None
 predictor = LightweightPredictor()
 
 # FastAPI app
@@ -960,6 +971,14 @@ class BulkPredictionResponseWithErrors(BaseModel):
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
+
+
+def _get_model_syncer() -> ModelSyncer:
+    """Return the model syncer, creating it only when runtime work needs it."""
+    global model_syncer
+    if model_syncer is None:
+        model_syncer = ModelSyncer()
+    return model_syncer
 
 
 @app.get("/status", response_model=StatusResponse)
@@ -1140,7 +1159,8 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
 @app.post("/reload")
 async def reload_models():
     try:
-        synced = model_syncer.sync_models()
+        syncer = _get_model_syncer()
+        synced = syncer.sync_models()
         loaded = predictor.load_models()
         return {
             "synced": synced,
@@ -1188,7 +1208,10 @@ async def root():
 
 @app.on_event("startup")
 async def startup():
+    global model_syncer
+
     logging.info(f"Starting up (PID={os.getpid()})...")
+    model_syncer = ModelSyncer()
     # Initial sync & load — may fail if training server isn't up yet
     model_syncer.sync_models()
     predictor.load_models()
@@ -1202,7 +1225,8 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     logging.info(f"Shutting down (PID={os.getpid()})...")
-    model_syncer.shutdown()
+    if model_syncer is not None:
+        model_syncer.shutdown()
 
 
 if __name__ == "__main__":
