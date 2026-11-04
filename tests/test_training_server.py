@@ -82,11 +82,8 @@ def test_drop_timestamp_staticmethod_and_instance():
         assert "timestamp" in rows[0]
 
 
-def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
-    """Regression test for PR #58: train() and _calculate_metrics_on_test must strip timestamps cleanly."""
-    predictor = LatencyPredictor()
-
-    # Populate both noqueue (waiting=0) and queued (waiting>0) training buckets with timestamped samples
+def _add_training_samples(predictor: LatencyPredictor) -> None:
+    """Populate both noqueue (waiting=0) and queued (waiting>0) training buckets with timestamped samples."""
     for i in range(6):
         noqueue_sample = _make_sample(i, waiting=0)
         queued_sample = _make_sample(i + 6, waiting=(i % 3) + 1)
@@ -95,6 +92,12 @@ def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
             bucket_key = predictor._get_bucket_key(sample)
             predictor.ttft_data_buckets[bucket_key].append(sample)
             predictor.tpot_data_buckets[bucket_key].append(sample)
+
+
+def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
+    """Regression test for PR #58: train() and _calculate_metrics_on_test must strip timestamps cleanly."""
+    predictor = LatencyPredictor()
+    _add_training_samples(predictor)
 
     # Populate test deques with timestamped samples
     for i in range(4):
@@ -108,6 +111,8 @@ def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
     assert predictor.ttft_model is not None, "Expected ttft_model to be trained"
     assert predictor.tpot_model is not None, "Expected tpot_model to be trained"
     assert predictor.last_retrain_time is not None
+    assert predictor.last_successful_retrain_time is not None
+    assert not predictor.training_failures, f"Unexpected retrain failures: {predictor.last_training_error}"
     assert os.path.exists(ts.settings.TTFT_MODEL_PATH)
     assert os.path.exists(ts.settings.TPOT_MODEL_PATH)
 
@@ -133,3 +138,79 @@ def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
     assert ql is not None
     assert coverage is not None
     assert violation is not None
+
+
+def test_train_records_stage_failure(configured_settings, monkeypatch):
+    """A caught failure inside one model's fit is counted under its stage, not just logged."""
+    # Ensemble sub-models also fit with model_name="ttft"; keep them out so only the ttft stage fails.
+    monkeypatch.setattr(ts.settings, "ENSEMBLE_MODE", False)
+    predictor = LatencyPredictor()
+    _add_training_samples(predictor)
+
+    original_fit = predictor._train_model_with_scaling
+
+    def fail_ttft(features, target, model_name=None, *args, **kwargs):
+        if model_name == "ttft":
+            raise RuntimeError("injected ttft failure")
+        return original_fit(features, target, model_name, *args, **kwargs)
+
+    monkeypatch.setattr(predictor, "_train_model_with_scaling", fail_ttft)
+    predictor.train()
+
+    assert predictor.training_failures["ttft"] == 1
+    assert predictor.training_failures["tpot"] == 0
+    assert predictor.last_training_error == "ttft: RuntimeError: injected ttft failure"
+    assert predictor.last_training_failure_time is not None
+    assert predictor.last_successful_retrain_time is None
+    assert 'training_failures_total{stage="ttft"} 1' in predictor.get_metrics()
+
+
+def test_train_records_outer_failure(configured_settings, monkeypatch):
+    """The #108 failure mode: an exception escaping train() is counted and keeps last success unset."""
+    predictor = LatencyPredictor()
+    _add_training_samples(predictor)
+
+    def broken_drop_timestamp(rows):
+        raise AttributeError("'LatencyPredictor' object has no attribute '_drop_timestamp'")
+
+    monkeypatch.setattr(predictor, "_drop_timestamp", broken_drop_timestamp)
+    predictor.train()
+
+    assert dict(predictor.training_failures) == {"train": 1}
+    assert predictor.last_successful_retrain_time is None
+    metrics = predictor.get_metrics()
+    assert 'training_failures_total{stage="train"} 1' in metrics
+    assert 'training_failures_total{stage="ttft"} 0' in metrics
+    assert "training_last_success_timestamp_seconds{} 0" in metrics
+
+
+def test_ttft_only_retrain_counts_as_success(configured_settings):
+    """TPOT skipped for too few samples is not a failure; a clean TTFT-only retrain still counts."""
+    predictor = LatencyPredictor()
+    _add_training_samples(predictor)
+    predictor.train()
+    assert predictor.is_ready
+
+    predictor.last_successful_retrain_time = None
+    for bucket in predictor.tpot_data_buckets.values():
+        bucket.clear()
+    predictor.train()
+
+    assert not predictor.training_failures
+    assert predictor.last_successful_retrain_time is not None
+
+
+def test_save_failure_blocks_success(configured_settings, monkeypatch):
+    """Models the prediction servers can't sync from disk are not a successful retrain."""
+    predictor = LatencyPredictor()
+    _add_training_samples(predictor)
+
+    def failing_dump(*args, **kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(ts.joblib, "dump", failing_dump)
+    predictor.train()
+
+    assert predictor.training_failures["save"] == 1
+    assert predictor.last_retrain_time is not None
+    assert predictor.last_successful_retrain_time is None
