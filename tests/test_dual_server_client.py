@@ -26,6 +26,13 @@ import requests
 PREDICTION_URL = os.getenv("PREDICTION_SERVER_URL", "http://<PREDICTION_IP>:80")  # Update this
 TRAINING_URL = os.getenv("TRAINING_SERVER_URL", "http://<TRAINING_IP>:8080")  # Update this
 
+# These tests need live servers (see deploy/base/test/). Skip up front rather than
+# spending the readiness timeout polling placeholder URLs during unit-test runs.
+pytestmark = pytest.mark.skipif(
+    not (os.getenv("PREDICTION_SERVER_URL") and os.getenv("TRAINING_SERVER_URL")),
+    reason="requires live servers: set PREDICTION_SERVER_URL and TRAINING_SERVER_URL",
+)
+
 
 # Helper to wait until the servers are ready
 def wait_for_ready(url: str, timeout: float = 30.0, interval: float = 1.0):
