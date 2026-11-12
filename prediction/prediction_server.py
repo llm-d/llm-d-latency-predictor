@@ -582,6 +582,8 @@ class LightweightPredictor:
                 "prefix_cache_score": features["prefix_cache_score"],
                 "encoder_matched_size": features.get("encoder_matched_size", 0),
                 "encoder_input_size": features.get("encoder_input_size", 0),
+                "prefill_tokens_in_flight": features.get("prefill_tokens_in_flight", 0),
+                "decode_tokens_in_flight": features.get("decode_tokens_in_flight", 0),
             }
             tpot_raw_data = {
                 "kv_cache_percentage": features["kv_cache_percentage"],
@@ -589,6 +591,8 @@ class LightweightPredictor:
                 "num_request_waiting": features["num_request_waiting"],
                 "num_request_running": features["num_request_running"],
                 "num_tokens_generated": features["num_tokens_generated"],
+                "prefill_tokens_in_flight": features.get("prefill_tokens_in_flight", 0),
+                "decode_tokens_in_flight": features.get("decode_tokens_in_flight", 0),
             }
 
             if queue_regime is not None:
@@ -671,6 +675,8 @@ class LightweightPredictor:
                     "prefix_cache_score": features["prefix_cache_score"],
                     "encoder_matched_size": features.get("encoder_matched_size", 0),
                     "encoder_input_size": features.get("encoder_input_size", 0),
+                    "prefill_tokens_in_flight": features.get("prefill_tokens_in_flight", 0),
+                    "decode_tokens_in_flight": features.get("decode_tokens_in_flight", 0),
                 }
                 if "pod_type" in features:
                     ttft_entry["pod_type"] = features["pod_type"]
@@ -682,6 +688,8 @@ class LightweightPredictor:
                     "num_request_waiting": features["num_request_waiting"],
                     "num_request_running": features["num_request_running"],
                     "num_tokens_generated": features["num_tokens_generated"],
+                    "prefill_tokens_in_flight": features.get("prefill_tokens_in_flight", 0),
+                    "decode_tokens_in_flight": features.get("decode_tokens_in_flight", 0),
                 }
                 if "pod_type" in features:
                     tpot_entry["pod_type"] = features["pod_type"]
