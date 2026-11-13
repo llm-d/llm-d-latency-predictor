@@ -27,6 +27,19 @@ The Predictor repository owns `proto/common/protocol/latency.proto` and `proto/t
 
 Phase 1 introduces the schema, codecs and HTTP adapters while retaining the existing feature preparation and Go calculation. Phase 2 makes the schema descriptors drive feature selection and the Go registry drive capture and composition. The following definitions specify the proposed final contract, including metadata that Phase 1 declares but Phase 2 consumes.
 
+### Review map and source baseline
+
+This is a proposed contract, not a description of code already merged upstream. Existing behavior was checked against Predictor [`1962491`](https://github.com/llm-d/llm-d-latency-predictor/tree/1962491f9245e54db351b3a10ec76535989069b6) and Router [`6e6b3ee`](https://github.com/llm-d/llm-d-router/tree/6e6b3ee4f62e9405fed86c9b8eee97cbb44b0149); implementation PRs must repeat the comparison on their actual target revisions. `common/protocol/`, `common/feature_plan.py` and Router `features.go` below are proposed additions. Existing integration points are the two Python server modules and Router's `predictedlatency` hooks/client.
+
+| Priority / review question | Contract to review | Evidence required before implementation merge |
+| --- | --- | --- |
+| P0: What is shared? | Sections 1-2: complete messages, field numbers, defaults and target orders. | Regeneration and shared wire fixtures. |
+| P0: Is JSON unchanged? | Section 3: adapter ownership and per-case conversion rules. | Old/new HTTP matrix and boundary validation cases. |
+| P0: When is each signal sampled? | Sections 4-5: scopes, lifecycle table and selected endpoint handling. | Hook tests with changing metrics/load and distinct endpoints. |
+| P0: What reaches each estimator? | Section 2: Feature Plan API, transforms and artifact-column authority. | Exact ordered frames across targets, gates, regimes and serving paths. |
+| P1: Which models can activate or roll back? | Section 6: candidate checks, activation and rollback limits. | Historical-artifact and failed-reload tests, including mismatched model/scaler dimensions. |
+| P1: What is independently mergeable? | Sections 8-10: file map, PR dependencies and phase gates. | Each phase's compatibility results and A-C report. |
+
 ## Design details
 
 ### 1. Protobuf messages and field numbers
@@ -219,6 +232,24 @@ The raw-column orders are fixed as follows. `-` means excluded. Integers default
 
 Python inserts `is_queued = int(num_request_waiting > 0)` at order 0. TTFT additionally inserts `effective_input_tokens = (1 - prefix_cache_score) * input_token_length` at 100 and a categorical prefix bucket at 110. The prefix bucket is `min(int(clip(score, 0, 1) * 4), 3)`. `pod_type_cat` uses the existing categories `['', 'prefill', 'decode']`. The noqueue ensemble drops `is_queued` and `num_request_waiting`. Ridge drops the prefix bucket, one-hot encodes pod type and applies its stored `StandardScaler`; tree models retain categorical inputs. Schema order must reproduce these existing lists exactly before any new production input is enabled.
 
+#### Feature Plan API and model association
+
+The plan is a set of functions in `common/feature_plan.py`, not a new model class. Both existing server classes delegate their preparation helpers to it:
+
+| Function | Input, output and obligation |
+| --- | --- |
+| `raw_fields(target, settings)` | Ordered descriptor fields for `ttft` or `tpot`; resolve encoder/in-flight gates. Cache descriptor selection by target and both gate values. |
+| `feature_columns(target, settings, noqueue=False)` | Final ordered names after explicit engineered-column insertion and optional queue-column removal; reject duplicate positions. |
+| `training_frame(rows, target, settings)` | Historical dictionaries to target raw frame plus label; fill optional defaults before dropping incomplete required rows. Do not mutate retained samples. |
+| `raw_frames(rows, settings)` / `raw_frames_fast(requests, settings)` | Equivalent TTFT/TPOT raw frames from dictionaries or validated request objects. The fast path shares the same selected fields and defaults. |
+| `prepare_features(df, target, settings, prefix_buckets=4)` | Add the specified transforms/categories and return exactly `feature_columns(...)`. Callers supply a fresh frame or copy. |
+| `align_features(frame, model, scaler=None)` | Select fitted names in fitted order; fill only known optional missing inputs; reject unknown columns or incompatible unnamed dimensions. |
+| `validate_model_features(model, target, settings, scaler=None, noqueue=False)` | Exercise the target/regime preparation and artifact alignment before publishing a candidate; additionally enforce the model/scaler consistency requirements in section 6. |
+
+For example, with encoder and in-flight gates off, the TTFT frame is `[is_queued, kv_cache_percentage, input_token_length, num_request_waiting, num_request_running, prefix_cache_score, effective_input_tokens, prefill_score_bucket, pod_type_cat]`; TPOT uses the same first five columns followed by `[num_tokens_generated, pod_type_cat]`. Enable in-flight by inserting its two fields after `num_request_running`; enable encoder by inserting `[encoder_matched_size, encoder_input_size]` immediately before TTFT's `prefix_cache_score`. Encoder does not add TPOT columns. Ridge then removes `prefill_score_bucket` and replaces `pod_type_cat` with the fixed three dummy columns produced by the existing pandas transform. Preserve those resulting fitted names and dtypes, not just the raw-field count.
+
+There are three different identities: the schema digest identifies declarations, the fitted names/categories/scaler identify a model's input interpretation, and file checksums identify the downloaded artifact bytes. `ModelInfo` and `ModelExportMetadata` above do **not** contain a feature-plan version; neither `exported_at` nor a matching schema digest proves artifact compatibility. Phase 2 uses the existing estimator/scaler metadata rather than adding a required manifest that would break old joblib files. Training records names through the existing fit/save operations, and serving aligns to those saved names, never to a newly sorted coefficient map. Library versions, schema revision, flags, target/regime and artifact checksums must accompany test/rollout evidence. A transform or categorical-meaning change under an existing name requires a separate versioned artifact rollout; names alone cannot detect it.
+
 ### 3. JSON/HTTP boundary
 
 Composition is internal. The wire representation of `PredictionRequest{features: ...}` remains a flat JSON object, for example:
@@ -245,6 +276,19 @@ Router `protocol/json.go` uses `protojson` with proto field names, then flattens
 Codecs retain optional zero presence, omit absent optional fields, ignore unknown HTTP fields and parse into a fresh message before replacing a destination. Unknown fields are discarded, not preserved for retransmission. Nullable `pod_type` maps to the existing empty-category behavior. Maps and arrays retain the endpoint-specific `{}`, `[]` and `null` behavior through compatibility facades; protobuf map presence alone cannot express all these distinctions.
 
 Python `common/protocol/models.py:request_model()` constructs Pydantic classes once from descriptors. FastAPI keeps its normal validation and the strict bulk path can construct NumPy arrays directly from validated objects. A second protobuf parse per inference row is unnecessary. `ProtocolModel.to_proto()` remains available for explicit message conversion and contract tests. The training service's diagnostic `/predict` model continues to exclude both in-flight token fields; the independent prediction service accepts them. This asymmetry must be tested, not silently removed.
+
+The boundary responsibilities are deliberately separate:
+
+| Boundary / case | Conversion and validation rule | Implementation owner |
+| --- | --- | --- |
+| Go HTTP encode/decode | Public request facades call the shared codec; flatten `features`, retain snake_case output and emit int64 as JSON numbers without float conversion. | Client `types.go` marshal/unmarshal methods and `protocol/json.go`. |
+| Python HTTP ingress | Build flat Pydantic models once from descriptors, then retain the existing FastAPI route/response logic. Do not replace request validation with a protobuf parse. | `common/protocol/models.py:request_model()` and declarations in both server modules. |
+| Explicit Python message conversion | Flatten/unflatten using `to_dict()` / `from_dict()`; parse into a fresh message and replace the destination only on success. | `common/protocol/json_codec.py`; `ProtocolModel.to_proto()` is opt-in. |
+| Missing field | Codec retains absence. API rejects missing required inputs; optional API fields and historical rows receive typed schema defaults at their respective application boundaries. | Codecs, `request_model()`, `training_frame()`. |
+| Explicit numeric zero | Preserve presence; do not replace zero with the default. Bounds may still reject it, as in the disposable extension's minimum of 5. | Codecs and existing application validation. |
+| Explicit `null` | Protobuf conversion treats scalar null as unset; HTTP request validation rejects numeric null, including optional numeric fields. Only nullable `pod_type` accepts null and preparation maps it to the empty category. | Codec semantics and Pydantic rules are tested separately. |
+| Unknown or nested `features` key | Ignore and discard, including when a nested value conflicts with a valid flat field. A nested-only payload still fails required-field validation. | Both codecs and Pydantic's existing extra-field policy. |
+| Naming/coercion/error response | Emit snake_case. ProtoJSON name aliases do not expand the FastAPI API's accepted aliases. Preserve existing Pydantic coercion, 422 validation bodies, strict-batch failure and ordinary-batch partial results. | Endpoint compatibility tests against the unmodified services. |
 
 Router's `PredictionRequest` and `TrainingEntry` retain their existing public accessors and gain a `Features` message for additional fields. `PredictionFromFeatures` and `TrainingFromFeatures` clone a snapshot and project existing fields into those accessors. During encoding, accessor values override overlapping schema values, including zero, so existing callers that mutate fields keep working. New callers initialize through these helpers or constructor options:
 
@@ -402,6 +446,19 @@ sequenceDiagram
 7. `feature_columns()` and `prepare_features()` provide the same ordered transforms to training, held-out evaluation, default-model initialization and serving. `raw_frames()` serves single/ordinary-batch paths; `raw_frames_fast()` serves strict batch. All three engines, both objectives and both queue regimes use this plan.
 8. Models keep library-recorded names. Ridge exports descaled coefficients by the fitted scaler's actual names; trees retain library JSON and LightGBM importances. Predictor synchronization keeps existing checksum/download handling, validates loaded columns and swaps usable models under the existing lock. A later request exercises the reloaded model, not just file availability.
 
+The hook-level sampling and label contract is:
+
+| Event / existing hook | Snapshot and endpoint | Observation sent |
+| --- | --- | --- |
+| Candidate evaluation / `Produce` | Request token count plus an independent endpoint scalar snapshot per full endpoint ID; metrics at row composition. Later endpoint-attribute mutations must not rewrite these snapshots. | One scheduling row per candidate, `num_tokens_generated=1`; no measured labels. |
+| Selection / `PreRequest` | Record primary and optional prefill endpoint metadata; clone selected metrics into profile-specific `lastSeenMetrics`. Reuse captured endpoint scalars. | Retain selected predictions; no training row yet. |
+| First streaming data callback / `processFirstTokenForLatencyPrediction` | Use prefill snapshot/metrics when disaggregated, otherwise primary. Read the currently retained metrics before this helper's subsequent refresh. A response header alone is not a token event. | `actual_ttft_ms = now - requestReceivedTimestamp` in milliseconds, `actual_tpot_ms=0`, generated-token feature 0. |
+| Later token callbacks / `processTokenForLatencyPrediction` | Advance observed-token count/last-token time and refresh retained metrics at the existing hook point. Do not recapture endpoint scalars. | No new per-token training row; retain the current request-average TPOT behavior. |
+| Completion / `ResponseBody` with `EndOfStream` | Use primary snapshot and latest retained primary metrics; clear prefix/encoder features for TPOT. With more than one observed token, average TPOT is `(lastTokenTime - requestReceivedTime - TTFT) / (observedTokens - 1)` in milliseconds. | Send TPOT row only for a positive average, with actual TTFT 0. Non-streaming completion records end-to-end latency in the existing TTFT slot. |
+| Truncation / cancellation / cleanup | Preserve the terminal-event contract of the target Router base. A synthesized completion is not an additional token. Remove request context on terminal cleanup. | Never fabricate a missing first-token label or duplicate a completed observation; a stale `Produce` must not recreate cancelled context. |
+
+These are Router's current callback-derived token observations, not a new tokenizer measurement of output tokens. Tests must pin the base's callback semantics and check zero/one-token, non-streaming, missing-metrics and disaggregated cases explicitly.
+
 The schema-driven local Ridge function remains `intercept + sum(coefficient[field.name] * feature_value)` in the specified ridge order. An absent coefficient contributes zero and an absent optional input uses its schema default. This preserves the existing subset of raw terms and its floating-point accumulation order. Python also uses engineered, categorical and in-flight terms and quantile adjustments; equality between local Go and Python is therefore not a general baseline invariant. New-feature tests isolate the new contribution; separate before/after tests prove the existing Go formula is unchanged.
 
 ### 6. Compatibility mechanisms and failure behavior
@@ -424,6 +481,18 @@ Field numbers and JSON names have distinct compatibility roles. Protobuf numbers
 Phase 1 and Phase 2 add no production model columns and must retain the existing column lists, so they can reuse compatible existing artifacts with the same library versions. A future feature-adding release is a separate rollout: upgrade readers before enabling the writer/column, retain the prior model and settings for rollback, and prevent old workers from consuming new-column artifacts, for example through explicitly versioned deployment artifact directories. This RFC does not add an artifact-distribution versioning service or promise that an old binary can load every future model.
 
 For repeatable before/after training tests, fix timestamps, `PYTHONHASHSEED`, RNG seeds, model settings and the submitted rows. The existing Python hash-based train/test split is process-seed dependent; retaining its code alone does not prove equal splits. Compare retained rows and split membership as well as final predictions.
+
+#### Candidate activation and rollback
+
+Prediction `LightweightPredictor.load_models()` is the activation boundary. Compute file checksums and deserialize into local candidate variables outside the serving lock. Require valid TTFT and TPOT single models, plus both scalers for Ridge. Validate named-column order and available dimensions for every candidate. For Ridge, the transformed/scaler column count must equal the fitted estimator's input count and coefficient length; checking scaler names alone is insufficient. Validate each target and each queue regime before setting `ensemble_active`. Corrupt, unknown-column and dimension-mismatch fixtures must fail before publication.
+
+The current prototype's `validate_model_features()` exercises preparation/alignment but does not yet compare the Ridge estimator's dimensions with its scaler: a ten-column scaler paired with a two-input Ridge model passes that check and then fails prediction. The implementation must add this admission check and a regression test; the existing unknown-feature rejection test does not prove it. Even matching dimensions cannot identify every semantically mismatched multi-file model/scaler pair, so retain matched artifact sets and their baseline prediction fixtures.
+
+After successful validation, swap both target references, their scalers, gated references/active flag, checksums and load timestamp under the existing lock. An in-flight prediction retains its previously captured references. On single-model candidate failure, return failure without replacing a previously usable in-memory set or advancing its loaded checksums. If only a gated candidate fails, preserve the existing policy of activating the validated single models with the ensemble inactive. This is an intentional fallback, not preservation of the old gated predictions.
+
+At cold start there is no prior usable set: prediction readiness remains false and inference follows the existing 503 behavior until compatible files load. Trainer seed loading is a different startup path; incompatible seeds fail initialization rather than receiving this prediction-worker fallback. Retaining in-memory references is not a durable rollback: after a process restart only files remain. A deployment rollback restores the previous binary/configuration and its complete matching artifact set, then checks readiness and reference predictions. Stop incompatible candidate synchronization before restoring files. Restore model and scaler files together; never claim that reverting a feature flag alone restores the prior model.
+
+The existing download path atomically replaces individual destination files, but trainer writes and multi-file generation publication are not transactional. This change must not claim otherwise or silently add a distribution subsystem. If tests expose a cross-file race, report it separately and keep using a matched, quiescent artifact snapshot for compatibility acceptance.
 
 ### 7. Generation and cross-repository review
 
@@ -464,6 +533,18 @@ Ridge coefficient-name alignment with the fitted scaler and conversion of LightG
 
 Publication order is: approve this design; review independent prerequisites; publish the Predictor schema/adapters; review Router schema/adapters against that exact commit; then review each repository's registry/feature-plan changes. Paired changes may be reviewed together, but both phase boundaries must build and have their own results. The schema phase must not depend on the registry being present.
 
+The file map above is split into these review units; performance gates apply to the paired phase results rather than requiring unrelated algorithm changes:
+
+| Review unit / dependency | Allowed scope | Merge gate |
+| --- | --- | --- |
+| Prerequisites / independent | Ridge export naming and LightGBM export scalar corrections, each with its own reproducer; unrelated Router fixes separately. | Actual-model red/green tests and explicit behavior impact, without a schema dependency. |
+| 1A: Predictor schema / approved RFC | Canonical messages, bindings, codec, descriptor-derived HTTP models and generation support. Keep existing preparation/model logic. | Generation clean; old JSON fixtures, validation/error shapes and existing service tests preserved. |
+| 1B: Router schema / published 1A revision | Generated bindings, flat compatibility facades and artifact adapters. Keep current hooks, capture timing and Ridge terms. | Existing callers compile; Go/Python wire and mixed-version matrix pass; fixed-artifact predictions unchanged; paired Phase 1 A-C gate. |
+| 2A: Predictor Feature Plan / Phase 1 | Shared selection/preparation/alignment and candidate validation, including the Ridge pair dimension check. | Ordered frames/dtypes/transforms match the accepted baseline; historical artifacts, reload rejection and controlled retraining pass for all engines/regimes. |
+| 2B: Router registry / Phase 1 and paired 2A | Providers, required DAG dependencies, lifecycle snapshots, descriptor validation and ordered Ridge terms. | Lifecycle/race tests, disposable schema-plus-provider roundtrip and paired Phase 2 A-C gate. |
+
+Each unit's PR must name its exact baseline/dependency commits, link the corresponding tests and label any failed or pending gate. Phase 1 can be deployed with the old feature plumbing; Phase 2 is not required to make it functional. Neither a design approval nor a small/shared-GPU smoke test substitutes for a pending implementation merge gate.
+
 ### 9. Tests that establish behavior preservation
 
 | Test layer | Input and oracle | Required evidence |
@@ -473,11 +554,13 @@ Publication order is: approve this design; review independent prerequisites; pub
 | Lifecycle | Same request with distinct prefill/primary metadata, changing live load after `Produce`, missing optional attributes, encoder gates and both streaming modes. | Scheduling and selected training rows use the intended snapshots; TTFT/TPOT projections and required dependency edges match the baseline. Cancellation and terminal events do not publish late context or duplicate training. |
 | Fixed artifacts | Identical saved models/scalers and fixed rows through original and refactored paths. | Exact feature names/order, category encoding and transformed arrays; equal target predictions within a declared numeric tolerance. Exercise single, ordinary batch, strict batch, queue regimes and flags. |
 | Controlled retraining | Identical retained datasets, timestamps, seeds and model settings for all three engines and mean/quantile objectives. | Equal preparation/split inputs; compare before/after predictions separately from stochastic quality tests. Verify exported coefficient names and feature contributions. |
-| Historical artifacts/reload | Save artifacts with optional groups disabled, serve with them enabled and test the reverse with explicit defaults; inject an incompatible candidate. | Recorded columns are honored; failed reload preserves the usable model; gated and single fallback behavior is tested. |
+| Historical artifacts/reload | Save artifacts with optional groups disabled, serve with them enabled and test the reverse with explicit defaults; inject corrupt, unknown-column and mismatched model/scaler candidates. | Recorded columns are honored; failed reload preserves usable references/checksums and predictions; cold start stays unready; gated and single fallback behavior is tested. |
 | Extension | In disposable copies, add `extension_test_size` to the schema and one provider; regenerate; use missing/default/nonzero/invalid values. | Actual Go HTTP ingestion reaches training and all serving paths; all engines learn/export the field and reload it; Go local Ridge evaluates the new coefficient. No production test feature remains. |
 | Deployment chain | Real HTTP training/prediction services, then Router hooks/Go client and an inference backend. | Captured rows match request/snapshot values, model hashes change, synchronized artifacts match and prediction succeeds after reload. Health checks alone do not satisfy this. |
 
 The extension uses a nonzero default such as 7 to distinguish default propagation from accidental zeroing. Compare local Ridge before/after using the same coefficients and accumulation order. For Go/Python extension comparisons, isolate inputs for which the baseline formulas agree; do not generalize that result to all existing engineered terms or Python quantile outputs.
+
+Fixed-artifact comparisons run in the same pinned runtime and require identical input names, category sets, order, dtypes and transformed values before comparing predictions. Deterministic paths should produce identical predictions; any nonzero numeric tolerance must be stated and justified in the implementation PR before evaluating results. The 5% A-C performance allowance is not a prediction-value tolerance. Keep a separate report for retraining randomness and do not use it to waive an unexplained fixed-artifact difference.
 
 The implementation PRs should provide reproducible commands such as:
 
