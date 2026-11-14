@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "orjson",
     "pandas",
+    "protobuf>=5.26.1,<8",
     "pydantic",
     "requests",
     "river",
@@ -31,6 +32,7 @@ test = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+extend-exclude = ["common/protocol/*_pb2.py"]
 
 [tool.ruff.lint]
 # Minimal pragmatic selection for imported scientific/ML code.

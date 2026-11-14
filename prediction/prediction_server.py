@@ -59,6 +59,8 @@ except (ImportError, OSError) as e:
     LIGHTGBM_AVAILABLE = False
     logging.warning("LightGBM not available: %s. Install with: pip install lightgbm", e)
 
+from common.protocol import latency_pb2 as pb
+from common.protocol.models import request_model
 from common.types import ModelType, ObjectiveType, QueueGatedModel
 
 
@@ -895,18 +897,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
-class PredictionRequest(BaseModel):
-    kv_cache_percentage: float = Field(..., ge=0.0, le=1.0)
-    input_token_length: int = Field(..., ge=0)
-    num_request_waiting: int = Field(..., ge=0)
-    num_request_running: int = Field(..., ge=0)
-    num_tokens_generated: int = Field(..., ge=0)
-    prefix_cache_score: float = Field(..., ge=0.0, le=1.0)
-    pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
-    prefill_tokens_in_flight: int = Field(default=0, ge=0)
-    decode_tokens_in_flight: int = Field(default=0, ge=0)
-    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
-    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
+PredictionRequest = request_model(pb.PredictionRequest, "PredictionRequest", __name__)
 
 
 class PredictionResponse(BaseModel):
