@@ -53,6 +53,9 @@ except (ImportError, OSError) as e:
     lgb = None
     logging.warning("LightGBM not available: %s. Please install with: pip install lightgbm", e)
 
+from common.protocol import latency_pb2 as pb
+from common.protocol.json_codec import from_dict, marshal
+from common.protocol.models import request_model
 from common.types import ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque
 
 
@@ -1771,33 +1774,12 @@ predictor = LatencyPredictor()
 
 
 # --- Pydantic Models for API ---
-class TrainingEntry(BaseModel):
-    kv_cache_percentage: float = Field(..., ge=0.0, le=1.0)
-    input_token_length: int = Field(..., ge=0)
-    num_request_waiting: int = Field(..., ge=0)
-    num_request_running: int = Field(..., ge=0)
-    actual_ttft_ms: float = Field(..., ge=0.0)
-    actual_tpot_ms: float = Field(..., ge=0.0)
-    num_tokens_generated: int = Field(..., ge=0)
-    prefix_cache_score: float = Field(..., ge=0.0, le=1.0, description="Prefix cache hit ratio score (0.0 to 1.0)")
-    pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
-    prefill_tokens_in_flight: int = Field(default=0, ge=0)
-    decode_tokens_in_flight: int = Field(default=0, ge=0)
-    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
-    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+TrainingEntry = request_model(pb.TrainingEntry, "TrainingEntry", __name__)
 
 
-class PredictionRequest(BaseModel):
-    kv_cache_percentage: float = Field(..., ge=0.0, le=1.0)
-    input_token_length: int = Field(..., ge=0)
-    num_request_waiting: int = Field(..., ge=0)
-    num_request_running: int = Field(..., ge=0)
-    num_tokens_generated: int = Field(..., ge=0)
-    prefix_cache_score: float = Field(..., ge=0.0, le=1.0, description="Prefix cache hit ratio score (0.0 to 1.0)")
-    pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
-    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
-    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
+PredictionRequest = request_model(
+    pb.PredictionRequest, "PredictionRequest", __name__, exclude=("prefill_tokens_in_flight", "decode_tokens_in_flight")
+)
 
 
 class PredictionResponse(BaseModel):
@@ -1938,7 +1920,7 @@ def export_models():
             info.size = len(data)
             info.mtime = int(time.time())
             tar.addfile(info, io.BytesIO(data))
-        meta_bytes = json.dumps(meta, indent=2).encode()
+        meta_bytes = marshal(from_dict(meta, pb.ModelExportMetadata()))
         meta_info = tarfile.TarInfo(name="metadata.json")
         meta_info.size = len(meta_bytes)
         meta_info.mtime = int(time.time())
