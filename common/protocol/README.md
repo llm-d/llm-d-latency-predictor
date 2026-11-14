@@ -29,3 +29,17 @@ retain flat snake_case JSON, validation and response behavior. The optional
 retains optional zero presence and exact integer JSON numbers, discards unknown
 fields and replaces a destination only after successful parsing. The wire
 fixtures cover prediction/training rows and model artifacts.
+
+## CPU behavior comparison
+
+With both checkouts available in the same installed Python runtime, compare
+fixed artifacts, ordered training frames and controlled retraining:
+
+```bash
+python hack/compare-predictions.py --baseline-dir /path/to/baseline --output-dir /path/to/new-results
+```
+
+The command records source hashes, runtime versions, inputs and per-case
+results for all three engines, both objectives and single/gated models. It uses
+disposable artifacts and no external services. This comparison does not run LLM
+inference or establish the issue's A-C performance gates.
