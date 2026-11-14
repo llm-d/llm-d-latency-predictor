@@ -59,6 +59,17 @@ except (ImportError, OSError) as e:
     LIGHTGBM_AVAILABLE = False
     logging.warning("LightGBM not available: %s. Install with: pip install lightgbm", e)
 
+from common.feature_plan import (
+    align_features,
+    feature_columns,
+    prepare_features,
+    raw_frames,
+    raw_frames_fast,
+    validate_model_features,
+)
+from common.protocol import latency_pb2 as pb
+from common.protocol.models import request_model
+from common.protocol.schema import required_numeric_fields
 from common.types import ModelType, ObjectiveType, QueueGatedModel
 
 
@@ -88,10 +99,6 @@ class PredictSettings:
     ENABLE_TOKEN_IN_FLIGHT_FEATURES: bool = (
         os.getenv("LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES", "true").lower() == "true"
     )
-    # On by default. NOTE: a model persisted before these columns existed will fail
-    # on feature-count mismatch until its first retrain, so when rolling this out on
-    # top of an existing deployment, flush or regenerate models (and keep this flag in
-    # sync with the training server). Set to "false" to disable.
     ENABLE_ENCODER_FEATURES: bool = os.getenv("LATENCY_ENABLE_ENCODER_FEATURES", "true").lower() == "true"
 
     # Gated ensemble model paths (each wraps noqueue + queued sub-models)
@@ -336,74 +343,11 @@ class LightweightPredictor:
                 return all([self.ttft_model, self.tpot_model])
 
     def _prepare_features_with_interaction(self, df: pd.DataFrame, model_type: str) -> pd.DataFrame:
-        """Prepare features with interaction terms to match training server."""
-        if "pod_type" in df.columns:
-            df["pod_type"] = df["pod_type"].fillna("")
-            df["pod_type_cat"] = pd.Categorical(df["pod_type"], categories=["", "prefill", "decode"], ordered=False)
-        else:
-            df["pod_type_cat"] = pd.Categorical([""] * len(df), categories=["", "prefill", "decode"], ordered=False)
-
-        # Binary feature: gives the tree a clean signal to partition idle vs queued
-        df["is_queued"] = (df["num_request_waiting"] > 0).astype(int)
-
-        _tif = []
-        if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
-            if "prefill_tokens_in_flight" not in df.columns:
-                df["prefill_tokens_in_flight"] = 0
-            if "decode_tokens_in_flight" not in df.columns:
-                df["decode_tokens_in_flight"] = 0
-            _tif = ["prefill_tokens_in_flight", "decode_tokens_in_flight"]
-
-        if model_type == "ttft":
-            # Encoder columns (multimodal, TTFT-only): gated so old models without
-            # these columns keep predicting until their first retrain.
-            _enc = []
-            if settings.ENABLE_ENCODER_FEATURES:
-                for col in ("encoder_matched_size", "encoder_input_size"):
-                    if col not in df.columns:
-                        df[col] = 0
-                _enc = ["encoder_matched_size", "encoder_input_size"]
-
-            df["effective_input_tokens"] = (1 - df["prefix_cache_score"]) * df["input_token_length"]
-            df["prefill_score_bucket"] = (
-                (df["prefix_cache_score"].clip(0, 1) * self.prefix_buckets)
-                .astype(int)
-                .clip(upper=self.prefix_buckets - 1)
-            )
-            df["prefill_score_bucket"] = pd.Categorical(
-                df["prefill_score_bucket"], categories=[0, 1, 2, 3], ordered=True
-            )
-
-            feature_cols = (
-                ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
-                + _tif
-                + _enc
-                + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
-            )
-            return df[feature_cols]
-
-        else:  # tpot
-            feature_cols = (
-                ["is_queued", "kv_cache_percentage", "input_token_length", "num_request_waiting", "num_request_running"]
-                + _tif
-                + ["num_tokens_generated", "pod_type_cat"]
-            )
-            return df[feature_cols]
+        return prepare_features(df, model_type, settings, self.prefix_buckets)
 
     def _prepare_features_for_ensemble(self, df: pd.DataFrame, model_type: str, queue_regime: str) -> pd.DataFrame:
-        """Prepare features for ensemble sub-models.
-
-        Args:
-            df: DataFrame with raw features
-            model_type: 'ttft' or 'tpot'
-            queue_regime: 'noqueue' or 'queued'
-        Returns:
-            DataFrame with engineered features, with queue columns dropped for noqueue regime
-        """
-        features = self._prepare_features_with_interaction(df, model_type)
-        if queue_regime == "noqueue":
-            features = features.drop(columns=["is_queued", "num_request_waiting"], errors="ignore")
-        return features
+        prepared = self._prepare_features_with_interaction(df, model_type)
+        return prepared[feature_columns(model_type, settings, noqueue=queue_regime == "noqueue")]
 
     def load_models(self) -> bool:
         """Load models from disk. Skips reload if checksums haven't changed."""
@@ -463,12 +407,24 @@ class LightweightPredictor:
                 new_ttft_scaler = joblib.load(settings.LOCAL_TTFT_SCALER_PATH)
                 new_tpot_scaler = joblib.load(settings.LOCAL_TPOT_SCALER_PATH)
 
+            validate_model_features(new_ttft, "ttft", settings, new_ttft_scaler)
+            validate_model_features(new_tpot, "tpot", settings, new_tpot_scaler)
+
             new_ttft_gated = new_tpot_gated = None
             new_ensemble_active = False
             if settings.ENSEMBLE_MODE and ensemble_all_present:
                 try:
                     new_ttft_gated = joblib.load(settings.LOCAL_TTFT_GATED_MODEL_PATH)
                     new_tpot_gated = joblib.load(settings.LOCAL_TPOT_GATED_MODEL_PATH)
+                    for target, gated in (("ttft", new_ttft_gated), ("tpot", new_tpot_gated)):
+                        for regime in ("noqueue", "queued"):
+                            validate_model_features(
+                                getattr(gated, f"{regime}_model"),
+                                target,
+                                settings,
+                                getattr(gated, f"{regime}_scaler"),
+                                noqueue=regime == "noqueue",
+                            )
                     new_ensemble_active = True
                     logging.info("Gated ensemble models loaded successfully")
                 except Exception as e:
@@ -507,7 +463,7 @@ class LightweightPredictor:
                     prefix="pod_type",
                     drop_first=False,
                 )
-            ttft_scaled = ttft_scaler.transform(ttft_for_scale)
+            ttft_scaled = ttft_scaler.transform(align_features(ttft_for_scale, ttft_model, ttft_scaler))
 
             tpot_for_scale = df_tpot.copy()
             if "pod_type_cat" in tpot_for_scale.columns:
@@ -517,7 +473,7 @@ class LightweightPredictor:
                     prefix="pod_type",
                     drop_first=False,
                 )
-            tpot_scaled = tpot_scaler.transform(tpot_for_scale)
+            tpot_scaled = tpot_scaler.transform(align_features(tpot_for_scale, tpot_model, tpot_scaler))
 
             ttft_pred_mean, ttft_std = ttft_model.predict(ttft_scaled, return_std=True)
             tpot_pred_mean, tpot_std = tpot_model.predict(tpot_scaled, return_std=True)
@@ -531,19 +487,14 @@ class LightweightPredictor:
                 tpot_pred_mean + std_factor * tpot_std,
             )
         else:  # XGBoost or LightGBM
-            return ttft_model.predict(df_ttft), tpot_model.predict(df_tpot)
+            return ttft_model.predict(align_features(df_ttft, ttft_model)), tpot_model.predict(
+                align_features(df_tpot, tpot_model)
+            )
 
     def predict(self, features: dict) -> tuple[float, float]:
         """Make predictions using the loaded models."""
         try:
-            required = [
-                "kv_cache_percentage",
-                "input_token_length",
-                "num_request_waiting",
-                "num_request_running",
-                "num_tokens_generated",
-                "prefix_cache_score",
-            ]
+            required = required_numeric_fields(pb.PredictionRequest.DESCRIPTOR)
             for f in required:
                 if f not in features:
                     raise ValueError(f"Missing required feature: {f}")
@@ -574,42 +525,15 @@ class LightweightPredictor:
                     tpot_scaler = self.tpot_scaler
 
             # Heavy work: DataFrame construction + inference — no lock held.
-            ttft_raw_data = {
-                "kv_cache_percentage": features["kv_cache_percentage"],
-                "input_token_length": features["input_token_length"],
-                "num_request_waiting": features["num_request_waiting"],
-                "num_request_running": features["num_request_running"],
-                "prefix_cache_score": features["prefix_cache_score"],
-                "encoder_matched_size": features.get("encoder_matched_size", 0),
-                "encoder_input_size": features.get("encoder_input_size", 0),
-            }
-            tpot_raw_data = {
-                "kv_cache_percentage": features["kv_cache_percentage"],
-                "input_token_length": features["input_token_length"],
-                "num_request_waiting": features["num_request_waiting"],
-                "num_request_running": features["num_request_running"],
-                "num_tokens_generated": features["num_tokens_generated"],
-            }
+            df_ttft_raw, df_tpot_raw = raw_frames([features], settings, plain_prediction=True)
 
             if queue_regime is not None:
-                df_ttft_raw = pd.DataFrame([ttft_raw_data])
-                if "pod_type" in features:
-                    df_ttft_raw["pod_type"] = features["pod_type"]
                 df_ttft = self._prepare_features_for_ensemble(df_ttft_raw, "ttft", queue_regime)
 
-                df_tpot_raw = pd.DataFrame([tpot_raw_data])
-                if "pod_type" in features:
-                    df_tpot_raw["pod_type"] = features["pod_type"]
                 df_tpot = self._prepare_features_for_ensemble(df_tpot_raw, "tpot", queue_regime)
             else:
-                df_ttft_raw = pd.DataFrame([ttft_raw_data])
-                if "pod_type" in features:
-                    df_ttft_raw["pod_type"] = features["pod_type"]
                 df_ttft = self._prepare_features_with_interaction(df_ttft_raw, "ttft")
 
-                df_tpot_raw = pd.DataFrame([tpot_raw_data])
-                if "pod_type" in features:
-                    df_tpot_raw["pod_type"] = features["pod_type"]
                 df_tpot = self._prepare_features_with_interaction(df_tpot_raw, "tpot")
 
             ttft_preds, tpot_preds = self._predict_with_models(
@@ -629,14 +553,7 @@ class LightweightPredictor:
     def predict_batch(self, features_list: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         """Make batch predictions using the loaded models."""
         try:
-            required = [
-                "kv_cache_percentage",
-                "input_token_length",
-                "num_request_waiting",
-                "num_request_running",
-                "num_tokens_generated",
-                "prefix_cache_score",
-            ]
+            required = required_numeric_fields(pb.PredictionRequest.DESCRIPTOR)
             for i, features in enumerate(features_list):
                 for f in required:
                     if f not in features:
@@ -659,33 +576,7 @@ class LightweightPredictor:
                     tpot_scaler = self.tpot_scaler
 
             # Heavy work: DataFrame construction + inference — no lock held.
-            ttft_raw_data = []
-            tpot_raw_data = []
-
-            for features in features_list:
-                ttft_entry = {
-                    "kv_cache_percentage": features["kv_cache_percentage"],
-                    "input_token_length": features["input_token_length"],
-                    "num_request_waiting": features["num_request_waiting"],
-                    "num_request_running": features["num_request_running"],
-                    "prefix_cache_score": features["prefix_cache_score"],
-                    "encoder_matched_size": features.get("encoder_matched_size", 0),
-                    "encoder_input_size": features.get("encoder_input_size", 0),
-                }
-                if "pod_type" in features:
-                    ttft_entry["pod_type"] = features["pod_type"]
-                ttft_raw_data.append(ttft_entry)
-
-                tpot_entry = {
-                    "kv_cache_percentage": features["kv_cache_percentage"],
-                    "input_token_length": features["input_token_length"],
-                    "num_request_waiting": features["num_request_waiting"],
-                    "num_request_running": features["num_request_running"],
-                    "num_tokens_generated": features["num_tokens_generated"],
-                }
-                if "pod_type" in features:
-                    tpot_entry["pod_type"] = features["pod_type"]
-                tpot_raw_data.append(tpot_entry)
+            df_ttft_raw, df_tpot_raw = raw_frames(features_list, settings, plain_prediction=True)
 
             n = len(features_list)
             ttft_results = np.zeros(n)
@@ -715,8 +606,8 @@ class LightweightPredictor:
                 ]:
                     if not idx_list:
                         continue
-                    sub_ttft_raw = pd.DataFrame([ttft_raw_data[i] for i in idx_list])
-                    sub_tpot_raw = pd.DataFrame([tpot_raw_data[i] for i in idx_list])
+                    sub_ttft_raw = df_ttft_raw.iloc[idx_list].copy()
+                    sub_tpot_raw = df_tpot_raw.iloc[idx_list].copy()
                     sub_ttft = self._prepare_features_for_ensemble(sub_ttft_raw, "ttft", regime)
                     sub_tpot = self._prepare_features_for_ensemble(sub_tpot_raw, "tpot", regime)
                     ttft_p, tpot_p = self._predict_with_models(sub_ttft, sub_tpot, ttft_m, tpot_m, ttft_s, tpot_s)
@@ -726,10 +617,8 @@ class LightweightPredictor:
 
                 return ttft_results, tpot_results
             else:
-                df_ttft_raw = pd.DataFrame(ttft_raw_data)
                 df_ttft_batch = self._prepare_features_with_interaction(df_ttft_raw, "ttft")
 
-                df_tpot_raw = pd.DataFrame(tpot_raw_data)
                 df_tpot_batch = self._prepare_features_with_interaction(df_tpot_raw, "tpot")
 
                 ttft_preds, tpot_preds = self._predict_with_models(
@@ -757,21 +646,6 @@ class LightweightPredictor:
         try:
             n = len(reqs)
 
-            # Extract each feature column as a numpy array in one pass.
-            # np.fromiter with count= pre-allocates and avoids intermediate lists.
-            kv = np.fromiter((r.kv_cache_percentage for r in reqs), dtype=np.float64, count=n)
-            itl = np.fromiter((r.input_token_length for r in reqs), dtype=np.float64, count=n)
-            nrw = np.fromiter((r.num_request_waiting for r in reqs), dtype=np.float64, count=n)
-            nrr = np.fromiter((r.num_request_running for r in reqs), dtype=np.float64, count=n)
-            ntg = np.fromiter((r.num_tokens_generated for r in reqs), dtype=np.float64, count=n)
-            pcs = np.fromiter((r.prefix_cache_score for r in reqs), dtype=np.float64, count=n)
-            if settings.ENABLE_ENCODER_FEATURES:
-                ems = np.fromiter((r.encoder_matched_size for r in reqs), dtype=np.float64, count=n)
-                eis = np.fromiter((r.encoder_input_size for r in reqs), dtype=np.float64, count=n)
-            if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
-                pti = np.fromiter((r.prefill_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
-                dti = np.fromiter((r.decode_tokens_in_flight for r in reqs), dtype=np.float64, count=n)
-
             # Snapshot model references under lock (no inference here).
             with self.lock:
                 if not self.is_ready:
@@ -786,41 +660,8 @@ class LightweightPredictor:
                     ttft_scaler = self.ttft_scaler
                     tpot_scaler = self.tpot_scaler
 
-            # Build DataFrames from dict-of-arrays: Pandas receives already-typed
-            # numpy columns, skipping per-row type inference (the slow part of
-            # pd.DataFrame(list_of_dicts)).
-            df_ttft_raw = pd.DataFrame(
-                {
-                    "kv_cache_percentage": kv,
-                    "input_token_length": itl,
-                    "num_request_waiting": nrw,
-                    "num_request_running": nrr,
-                    "prefix_cache_score": pcs,
-                }
-            )
-            if settings.ENABLE_ENCODER_FEATURES:
-                df_ttft_raw["encoder_matched_size"] = ems
-                df_ttft_raw["encoder_input_size"] = eis
-            df_tpot_raw = pd.DataFrame(
-                {
-                    "kv_cache_percentage": kv,
-                    "input_token_length": itl,
-                    "num_request_waiting": nrw,
-                    "num_request_running": nrr,
-                    "num_tokens_generated": ntg,
-                }
-            )
-            if settings.ENABLE_TOKEN_IN_FLIGHT_FEATURES:
-                df_ttft_raw["prefill_tokens_in_flight"] = pti
-                df_ttft_raw["decode_tokens_in_flight"] = dti
-                df_tpot_raw["prefill_tokens_in_flight"] = pti
-                df_tpot_raw["decode_tokens_in_flight"] = dti
-
-            # Conditionally add pod_type column (only if any request uses it).
-            if any(r.pod_type for r in reqs):
-                pod_types = [r.pod_type for r in reqs]
-                df_ttft_raw["pod_type"] = pod_types
-                df_tpot_raw["pod_type"] = pod_types
+            df_ttft_raw, df_tpot_raw = raw_frames_fast(reqs, settings)
+            nrw = df_ttft_raw["num_request_waiting"].to_numpy()
 
             if ensemble_active:
                 nrw_int = nrw.astype(int)
@@ -895,18 +736,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
-class PredictionRequest(BaseModel):
-    kv_cache_percentage: float = Field(..., ge=0.0, le=1.0)
-    input_token_length: int = Field(..., ge=0)
-    num_request_waiting: int = Field(..., ge=0)
-    num_request_running: int = Field(..., ge=0)
-    num_tokens_generated: int = Field(..., ge=0)
-    prefix_cache_score: float = Field(..., ge=0.0, le=1.0)
-    pod_type: str | None = Field(default="", description="Pod type: 'prefill', 'decode', or '' for monolithic")
-    prefill_tokens_in_flight: int = Field(default=0, ge=0)
-    decode_tokens_in_flight: int = Field(default=0, ge=0)
-    encoder_matched_size: int = Field(default=0, ge=0, description="Encoder cache matched size (multimodal)")
-    encoder_input_size: int = Field(default=0, ge=0, description="Encoder input size (multimodal)")
+PredictionRequest = request_model(pb.PredictionRequest, "PredictionRequest", __name__)
 
 
 class PredictionResponse(BaseModel):
@@ -1074,14 +904,7 @@ async def predict_bulk_endpoint(request: BulkPredictionRequest):
     valid_requests = []
     valid_indices = []
     errors = []
-    required = [
-        "kv_cache_percentage",
-        "input_token_length",
-        "num_request_waiting",
-        "num_request_running",
-        "num_tokens_generated",
-        "prefix_cache_score",
-    ]
+    required = required_numeric_fields(pb.PredictionRequest.DESCRIPTOR)
 
     for i, pred_request in enumerate(request.requests):
         try:

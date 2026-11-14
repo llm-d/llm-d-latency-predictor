@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/llm-d/llm-d-router",
+  "commit": "87f9dca7fc08c81cb50c0b89e209b841150805bd",
+  "schema_path": "proto/common/protocol/latency.proto",
+  "schema_sha256": "e5f8fa44f805d1173588921ffb55effb7c1fd2aad0a306a91c1c99c8d7ee4c7f",
+  "fixture_path": "proto/testdata/wire.json",
+  "fixture_sha256": "a7df495271f2eade5b65b2178ec2edde9c252810c7c08b5b611976e5bbbaae9c"
+}

@@ -19,6 +19,22 @@ help: ## Show this help message
 
 ##@ Development
 
+PROTOC ?= protoc
+ROUTER_PROTO_DIR ?=
+PROTO_SOURCE_FLAGS ?=
+
+.PHONY: generate-proto
+generate-proto: ## Generate Python latency protocol messages (protoc 25.3).
+	python3 hack/generate-protocol.py --proto-dir "$(ROUTER_PROTO_DIR)" --protoc "$(PROTOC)" $(PROTO_SOURCE_FLAGS)
+
+.PHONY: verify-proto
+verify-proto: ## Verify generated messages without changing files.
+	python3 hack/generate-protocol.py --proto-dir "$(ROUTER_PROTO_DIR)" --protoc "$(PROTOC)" $(PROTO_SOURCE_FLAGS) --check
+
+.PHONY: test-protocol
+test-protocol: ## Run protocol compatibility tests without model servers.
+	python -m pytest tests/test_protocol.py
+
 .PHONY: install
 install: ## Install all dependencies and dev tools
 	pip install -r requirements.txt
