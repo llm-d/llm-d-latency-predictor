@@ -881,18 +881,6 @@ class LatencyPredictor:
                         + _enc
                         + ["prefix_cache_score", "effective_input_tokens", "prefill_score_bucket", "pod_type_cat"]
                     )
-                    ttft_feature_cols_br = (
-                        [
-                            "is_queued",
-                            "kv_cache_percentage",
-                            "input_token_length",
-                            "num_request_waiting",
-                            "num_request_running",
-                        ]
-                        + _tif
-                        + _enc
-                        + ["prefix_cache_score", "effective_input_tokens"]
-                    )
 
                     # Build X_ttft for all model types, then trim for BR
                     X_ttft = df_ttft[ttft_feature_cols_tree]
@@ -1092,7 +1080,7 @@ class LatencyPredictor:
 
                     # Store descaled coefficients for Bayesian Ridge
                     if self.model_type == ModelType.BAYESIAN_RIDGE:
-                        ttft_features = ttft_feature_cols_br  # no 'prefill_score_bucket' for BR
+                        ttft_features = list(new_ttft_scaler.feature_names_in_)
                         self.ttft_coefficients = self._store_descaled_coefficients(
                             new_ttft_model, new_ttft_scaler, ttft_features, "TTFT"
                         )
@@ -1104,13 +1092,7 @@ class LatencyPredictor:
 
                     # Store descaled coefficients for Bayesian Ridge
                     if self.model_type == ModelType.BAYESIAN_RIDGE:
-                        tpot_features = [
-                            "kv_cache_percentage",
-                            "input_token_length",
-                            "num_request_waiting",
-                            "num_request_running",
-                            "num_tokens_generated",
-                        ]
+                        tpot_features = list(new_tpot_scaler.feature_names_in_)
                         self.tpot_coefficients = self._store_descaled_coefficients(
                             new_tpot_model, new_tpot_scaler, tpot_features, "TPOT"
                         )
@@ -1329,7 +1311,7 @@ class LatencyPredictor:
 
                         # Save feature importances as JSON
                         feature_names = self.ttft_model.booster_.feature_name()
-                        importances = dict(zip(feature_names, self.ttft_model.feature_importances_))
+                        importances = dict(zip(feature_names, self.ttft_model.feature_importances_.tolist()))
 
                         ttft_imp_path = settings.TTFT_MODEL_PATH.replace(".joblib", "_importances.json")
                         with open(ttft_imp_path, "w") as f:
@@ -1372,7 +1354,7 @@ class LatencyPredictor:
 
                         # Save feature importances as JSON
                         feature_names = self.tpot_model.booster_.feature_name()
-                        importances = dict(zip(feature_names, self.tpot_model.feature_importances_))
+                        importances = dict(zip(feature_names, self.tpot_model.feature_importances_.tolist()))
 
                         tpot_imp_path = settings.TPOT_MODEL_PATH.replace(".joblib", "_importances.json")
                         with open(tpot_imp_path, "w") as f:
@@ -1630,6 +1612,9 @@ class LatencyPredictor:
                     "num_tokens_generated",
                     "pod_type_cat",
                 ]
+            if self.model_type == ModelType.BAYESIAN_RIDGE:
+                ttft_feats = [name for name in (self.ttft_coefficients or {}) if name != "intercept"] or ttft_feats
+                tpot_feats = [name for name in (self.tpot_coefficients or {}) if name != "intercept"] or tpot_feats
             emit_metrics(ttft_model, self.ttft_coefficients, ttft_feats, "ttft")
             emit_metrics(tpot_model, self.tpot_coefficients, tpot_feats, "tpot")
 
