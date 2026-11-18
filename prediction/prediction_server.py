@@ -246,7 +246,7 @@ class ModelSyncer:
                 ("ttft", settings.LOCAL_TTFT_MODEL_PATH),
                 ("tpot", settings.LOCAL_TPOT_MODEL_PATH),
             ]
-            if settings.MODEL_TYPE == ModelType.BAYESIAN_RIDGE:
+            if predictor.model_type == ModelType.BAYESIAN_RIDGE:
                 to_sync += [
                     ("ttft_scaler", settings.LOCAL_TTFT_SCALER_PATH),
                     ("tpot_scaler", settings.LOCAL_TPOT_SCALER_PATH),
