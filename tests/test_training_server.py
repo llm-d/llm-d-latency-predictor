@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 import training.training_server as ts
+from common.types import ObjectiveType
 from training.training_server import LatencyPredictor, TrainingEntry
 
 
@@ -49,7 +50,12 @@ def _make_sample(idx: int, waiting: int | None = None) -> dict:
 
 @pytest.fixture()
 def configured_settings(tmp_path, monkeypatch):
-    """Redirect model artifacts to tmp_path and lower sample thresholds for unit tests."""
+    """Redirect model artifacts to tmp_path, lower sample thresholds, and pin env-driven settings for unit tests."""
+    # Pin settings that Settings reads from LATENCY_* env vars, so a developer's
+    # environment can't change which code paths train() exercises.
+    monkeypatch.setattr(ts.settings, "MODEL_TYPE", "xgboost")
+    monkeypatch.setattr(ts.settings, "OBJECTIVE_TYPE", ObjectiveType.QUANTILE)
+    monkeypatch.setattr(ts.settings, "ENSEMBLE_MODE", True)
     monkeypatch.setattr(ts.settings, "TTFT_MODEL_PATH", str(tmp_path / "ttft.joblib"))
     monkeypatch.setattr(ts.settings, "TPOT_MODEL_PATH", str(tmp_path / "tpot.joblib"))
     monkeypatch.setattr(ts.settings, "TTFT_SCALER_PATH", str(tmp_path / "ttft_scaler.joblib"))
@@ -112,12 +118,11 @@ def test_train_and_test_metrics_with_timestamped_samples(configured_settings):
     assert os.path.exists(ts.settings.TPOT_MODEL_PATH)
 
     # Ensemble sub-models also call self._drop_timestamp(samples)
-    if ts.settings.ENSEMBLE_MODE:
-        assert predictor.ensemble_active is True
-        assert predictor.ttft_gated is not None
-        assert predictor.tpot_gated is not None
-        assert os.path.exists(ts.settings.TTFT_GATED_MODEL_PATH)
-        assert os.path.exists(ts.settings.TPOT_GATED_MODEL_PATH)
+    assert predictor.ensemble_active is True
+    assert predictor.ttft_gated is not None
+    assert predictor.tpot_gated is not None
+    assert os.path.exists(ts.settings.TTFT_GATED_MODEL_PATH)
+    assert os.path.exists(ts.settings.TPOT_GATED_MODEL_PATH)
 
     # Verify _calculate_metrics_on_test executed cleanly during train() and when called directly
     assert len(predictor.ttft_quantile_loss_scores) == 1
